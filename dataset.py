@@ -1,0 +1,118 @@
+# -*- coding: utf-8 -*-
+"""
+dataset.py
+-----------
+根据数据集路径构造 2-pass 编码命令（argv 形式）。
+- --dataset-inputs: 目录/文件/通配符
+- --stat-dir: 1-pass 日志目录，命名 {seq}_qav1enc_pass1_{br}.log
+- 输出：{seq}_{enc}_pass2_{br}.log/.csv/.ivf
+"""
+from __future__ import annotations
+from typing import List, Tuple, Iterable
+from pathlib import Path
+import re, os, glob
+
+__all__ = ["add_dataset_args", "build_cmds_from_dataset"]
+
+def add_dataset_args(ap) -> None:
+    ap.add_argument("--dataset-inputs", type=str, nargs="*", default=[],
+                    help="训练数据入口：目录/文件/通配符混合；目录将递归扫描所有 .yuv 文件。")
+    ap.add_argument("--dataset-bitrates", type=int, nargs="*", default=[2125],
+                    help="码率列表，例如：2125 1700")
+    ap.add_argument("--stat-dir", type=str, default="./1pass_logs",
+                    help="1-pass 日志所在目录（只读），命名 {seq}_qav1enc_pass1_{br}.log")
+    ap.add_argument("--out-dir", type=str, default="./outputs",
+                    help="2-pass 输出目录（ivf/csv/log 将写到这里）")
+    ap.add_argument("--name-template", type=str, default="{seq}_{enc}",
+                    help="2-pass 输出命名前缀模板。可用变量：{seq}, {enc}")
+    ap.add_argument("--fallback-res", type=str, default="1920x1080",
+                    help="当文件名解析不出分辨率时的默认值")
+    ap.add_argument("--fallback-fps", type=int, default=24,
+                    help="当文件名解析不出帧率时的默认值")
+    ap.add_argument("--extra", type=str, default="--rc-mode|1|--preset|1|--keyint|225|--bframes|15|--threads|1|--parallel-frames|1",
+                    help="公共附加参数（自动追加到每条命令后）。用 | 分隔键值")
+
+def _enc_short_name(encoder_path: str) -> str:
+    stem = Path(encoder_path).stem
+    return stem[len("qav1enc_"):] if stem.startswith("qav1enc_") else stem
+
+def _detect_res_fps_from_name(path: str, fallback_res: str, fallback_fps: int) -> Tuple[str, int]:
+    name = Path(path).name
+    m = re.search(r"_(\d{3,5}x\d{3,5})_(\d+)\.yuv$", name, re.IGNORECASE)
+    if m:
+        return m.group(1), int(m.group(2))
+    m2 = re.search(r"_(\d{3,5}x\d{3,5})\.yuv$", name, re.IGNORECASE)
+    if m2:
+        return m2.group(1), fallback_fps
+    return fallback_res, fallback_fps
+
+def _split_extra(extra: str) -> List[str]:
+    if not extra: return []
+    return [p for p in extra.split("|") if p]
+
+def _is_yuv_file(p: Path) -> bool:
+    return p.is_file() and p.suffix.lower() == ".yuv"
+
+def _expand_dataset_inputs(inputs: Iterable[str]) -> List[Path]:
+    found: List[Path] = []
+    def add_path(p: Path):
+        if _is_yuv_file(p):
+            found.append(p.resolve())
+    for entry in inputs:
+        if not entry: continue
+        p = Path(entry)
+        if p.exists():
+            if p.is_dir():
+                for sub in p.rglob("*"):
+                    if _is_yuv_file(sub):
+                        add_path(sub)
+            else:
+                add_path(p)
+        else:
+            for g in glob.glob(entry, recursive=True):
+                gp = Path(g)
+                if _is_yuv_file(gp):
+                    add_path(gp)
+    uniq = sorted({str(x): x for x in found}.values(), key=lambda x: str(x).lower())
+    return uniq
+
+def build_cmds_from_dataset(args, cfg) -> List[List[str]]:
+    enc = _enc_short_name(getattr(cfg, "encoder_path", "encoder"))
+    extra = _split_extra(getattr(args, "extra", ""))
+
+    yuv_files = _expand_dataset_inputs(getattr(args, "dataset_inputs", []))
+    if not yuv_files:
+        print("[dataset] WARN: 未在 --dataset-inputs 中发现任何 .yuv 文件")
+        return []
+
+    cmds: List[List[str]] = []
+    for yuv_path in yuv_files:
+        in_yuv = str(yuv_path)
+        seq = yuv_path.stem
+        res, fps = _detect_res_fps_from_name(in_yuv, args.fallback_res, args.fallback_fps)
+        name_base = args.name_template.format(seq=seq, enc=enc)
+
+        for br in getattr(args, "dataset_bitrates", [2125]):
+            brs = str(br).replace(".", "_")
+            stat_in = os.path.join(args.stat_dir, f"{seq}_qav1enc_pass1_{brs}.log")
+            stat_out = os.path.join(args.out_dir, f"{name_base}_pass2_{brs}.log")
+            ivf_out  = os.path.join(args.out_dir, f"{name_base}_pass2_{brs}.ivf")
+            csv_out  = os.path.join(args.out_dir, f"{name_base}_pass2_{brs}.csv")
+
+            parts = [
+                "--input", in_yuv,
+                "--input-res", res,
+                "--frames", "0",
+                "--o", ivf_out,
+                "--csv", csv_out,
+                "--bitrate", str(br),
+                "--pass", "2",
+                "--stat-in", stat_in,
+                "--stat-out", stat_out,
+                "--fps", str(fps),
+            ]
+            parts += extra
+            cmds.append(parts)
+
+    print(f"[dataset] 收集到 {len(yuv_files)} 个 YUV，共展开 {len(cmds)} 条 2-pass 命令。")
+    return cmds

@@ -1,0 +1,82 @@
+[ENC] launch: ./encoder/qav1enc --input E:/ftp/bhutan_1920x1080_25.yuv --input-res 1920x1080 --frames 0 --o E:/python/SAC/encoder/ac_origins_test_cqp.ivf --csv E:/python/SAC/encoder/ac_test_cqp.csv --rc-mode 1 --pass 2 --stat-in E:/python/SAC/encoder/1pass.log --stat-out E:/python/SAC/encoder/2pass.log --score-max 50.5 --score-avg 40.5 --score-min 38.5 --fps 25 --preset 1 --keyint 225 --bframes 15 --threads 1 --parallel-frames 1 --bitrate 2125
+[ENC] rl_dir=./encoder/rl_io
+qav1 encoder 8bit library version : 2.0.0.12352 (rl_forward_20250901_203839_7265a3ecc) RELEASE
+-------------------------- QAV1 Encoding Parameters --------------------------
+Threads 1, Parallel frames 1, CPU flag: SSSE3,SSE42,AVX,AVX2,
+Profile Main, Level 4.0, Tier Main, Resolution 1920x1080, fps 25000/1000, allintra 0
+CP 1, CP Unspecified, TC Unspecified, MC Unspecified, UV_pos Unknown, Range tv,
+rc-mode ABR, mbtree 1, pass 2, rate-max 2125(kbps), score-avg/min 40.50/38.50, br-dec 3, Intra-period 225, GOP 16, tile 1x1,
+preset superfast, tune PSNR, enabled quality metric : PSNR,
+Deblock 1, EDO 0, CDEF 1, LR 0, FG 0, sb_size 128, sb_ref_max 1, RDOQ 0, range 64,
+------------------------------------------------------------------------------
+static idr ratio: 0.200000
+1pass argus avg delta 100.000000 
+1pass d_absdiff_score_avg: 3.778656  avg: 37.722710 
+1pass bit reduce feature: 1.565885
+1pass bit reduce feature adjust: 1pass qpbase 199 101613408/82195000  10.985235/5.795359 
+1pass qpbase 199 220
+1pass bit reduce feature score_est 37.795548 score_1pass 37.722710 vmaf_est 0.266830 scene_classify 6
+2pass chunk log: score_est 44.584285 - 0.072838 bits_lower_limit 107049489 * 1.005827 qav1_rc_bits_ratio_low 1.200000 
+b_exceeded 0, 107049489  82195000
+b_exceeded 0, i_qp_base 92 lower limit: 107049489 score_target 40.500000 score_est 44.584285 bits_est 374663445 qpbound 48 vamfest 12.807181 target 86.000000
+b_exceeded 0, i_qp_base 92 lower limit: 107049489 score_target 40.500000 score_est 44.584285 bits_est 374663445 qpbound 48 vamfest 12.807181 target 86.000000 param->rc.i_br_dec_level 3 
+b_exceeded 1, i_qp_base 92 lower limit: 107049489 score_target 40.500000 score_est 44.584285 bits_est 374663445 qpbound 48 vamfest 12.807181 target 86.000000
+2pass chunk log: score_est 40.746287 - 0.072838 bits_lower_limit 107049489 * 1.005827 qav1_rc_bits_ratio_low 1.200000 
+b_exceeded 0, 107049489  82195000
+b_exceeded 0, i_qp_base 156 lower limit: 107049489 score_target 40.500000 score_est 40.746287 bits_est 166308374 qpbound 48 vamfest 8.088808 target 86.000000
+b_exceeded 0, i_qp_base 156 lower limit: 107049489 score_target 40.500000 score_est 40.746287 bits_est 166308374 qpbound 48 vamfest 8.088808 target 86.000000 param->rc.i_br_dec_level 3 
+b_exceeded 1, i_qp_base 156 lower limit: 107049489 score_target 40.500000 score_est 40.746287 bits_est 166308374 qpbound 48 vamfest 8.088808 target 86.000000
+2pass chunk log: score_est 38.538797 - 0.072838 bits_lower_limit 107049489 * 1.005827 qav1_rc_bits_ratio_low 1.200000 
+b_exceeded 0, 107049489  82195000
+b_exceeded 0, i_qp_base 188 lower limit: 107049489 score_target 40.500000 score_est 38.538797 bits_est 113070656 qpbound 48 vamfest 2.778722 target 86.000000
+b_exceeded 0, i_qp_base 188 lower limit: 107049489 score_target 40.500000 score_est 38.538797 bits_est 113070656 qpbound 48 vamfest 2.778722 target 86.000000 param->rc.i_br_dec_level 3 
+b_exceeded 0, i_qp_base 188 lower limit: 107049489 score_target 40.500000 score_est 38.538797 bits_est 113070656 qpbound 48 vamfest 2.778722 target 86.000000
+2pass chunk log: score_est 39.656511 - 0.072838 bits_lower_limit 107049489 * 1.005827 qav1_rc_bits_ratio_low 1.200000 
+b_exceeded 0, 107049489  82195000
+b_exceeded 0, i_qp_base 172 lower limit: 107049489 score_target 40.500000 score_est 39.656511 bits_est 135842499 qpbound 48 vamfest 5.802314 target 86.000000
+b_exceeded 0, i_qp_base 172 lower limit: 107049489 score_target 40.500000 score_est 39.656511 bits_est 135842499 qpbound 48 vamfest 5.802314 target 86.000000 param->rc.i_br_dec_level 3 
+b_exceeded 0, i_qp_base 172 lower limit: 107049489 score_target 40.500000 score_est 39.656511 bits_est 135842499 qpbound 48 vamfest 5.802314 target 86.000000
+2pass chunk log: score_est 40.202542 - 0.072838 bits_lower_limit 107049489 * 1.005827 qav1_rc_bits_ratio_low 1.200000 
+b_exceeded 0, 107049489  82195000
+b_exceeded 0, i_qp_base 164 lower limit: 107049489 score_target 40.500000 score_est 40.202542 bits_est 150035122 qpbound 48 vamfest 7.018832 target 86.000000
+b_exceeded 0, i_qp_base 164 lower limit: 107049489 score_target 40.500000 score_est 40.202542 bits_est 150035122 qpbound 48 vamfest 7.018832 target 86.000000 param->rc.i_br_dec_level 3 
+b_exceeded 0, i_qp_base 164 lower limit: 107049489 score_target 40.500000 score_est 40.202542 bits_est 150035122 qpbound 48 vamfest 7.018832 target 86.000000
+2pass chunk log: score_est 40.485295 - 0.072838 bits_lower_limit 107049489 * 1.005827 qav1_rc_bits_ratio_low 1.200000 
+b_exceeded 0, 107049489  82195000
+b_exceeded 0, i_qp_base 160 lower limit: 107049489 score_target 40.500000 score_est 40.485295 bits_est 157990720 qpbound 48 vamfest 7.590806 target 86.000000
+b_exceeded 0, i_qp_base 160 lower limit: 107049489 score_target 40.500000 score_est 40.485295 bits_est 157990720 qpbound 48 vamfest 7.590806 target RC  0I  qp 30 qpa 30.0 level 0 enh 0 fg 0 bits 208056 psnr 60.6139 mse 0.0567
+RC  0O  qp 160 qpa 30.0 level 6 enh 0 fg 0 bits      0 psnr 56.5592 mse 0.1459
+RC 16P (static scene) qp 72 qpa 64.7 level 1 enh 0 fg 0 bits  35368 psnr 55.2580 mse 0.2036
+RC  8B (static scene) qp 118 qpa 117.4 level 2 enh 0 fg 0 bits   7152 psnr 51.5802 mse 0.5228
+RC  4B (static scene) qp 137 qpa 137.0 level 3 enh 0 fg 0 bits   5240 psnr 52.1093 mse 0.4481
+RC  2B (static scene) qp 151 qpa 151.0 level 4 enh 0 fg 0 bits   3232 psnr 51.7019 mse 0.5184
+RC  1b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits    872 psnr 53.0436 mse 0.3681
+RC  3b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits    784 psnr 51.4065 mse 0.5543
+RC  6B (static scene) qp 151 qpa 151.0 level 4 enh 0 fg 0 bits   2944 psnr 51.1752 mse 0.5841
+RC  5b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits   1488 psnr 50.9877 mse 0.6087
+RC  7b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits    792 psnr 51.6593 mse 0.5094
+RC 12B (static scene) qp 136 qpa 136.0 level 3 enh 0 fg 0 bits   6280 psnr 52.2542 mse 0.4271
+RC 10B (static scene) qp 151 qpa 151.0 level 4 enh 0 fg 0 bits   2696 psnr 51.4619 mse 0.5331
+RC  9b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits   1208 psnr 51.4128 mse 0.5436
+RC 11b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits   1184 psnr 51.5884 mse 0.5127
+RC 14B (static scene) qp 151 qpa 151.0 level 4 enh 0 fg 0 bits   3424 psnr 51.1409 mse 0.5846
+RC 13b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits    944 psnr 50.9277 mse 0.6170
+RC 15b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits    864 psnr 52.0751 mse 0.4557
+RC 16O  qp 160 qpa 160.0 level 6 enh 0 fg 0 bits     24 psnr 53.8441 mse 0.2840
+RC 32P (static scene) qp 63 qpa 56.0 level 1 enh 0 fg 0 bits  47656 psnr 56.0679 mse 0.1659
+RC 24B (static scene) qp 118 qpa 117.3 level 2 enh 0 fg 0 bits   6152 psnr 51.5139 mse 0.5226
+RC 20B (static scene) qp 136 qpa 136.0 level 3 enh 0 fg 0 bits   5160 psnr 52.1984 mse 0.4277
+RC 18B (static scene) qp 151 qpa 151.0 level 4 enh 0 fg 0 bits   3624 psnr 51.6457 mse 0.5096
+RC 17b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits   1240 psnr 51.8480 mse 0.4847
+RC 19b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits    624 psnr 51.5774 mse 0.5106
+RC 22B (static scene) qp 151 qpa 151.0 level 4 enh 0 fg 0 bits   3616 psnr 50.6590 mse 0.6495
+RC 21b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits   1576 psnr 50.6888 mse 0.6412
+RC 23b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits    800 psnr 51.0025 mse 0.5990
+RC 28B (static scene) qp 136 qpa 136.0 level 3 enh 0 fg 0 bits   5360 psnr 52.0255 mse 0.4466
+RC 26B (static scene) qp 151 qpa 151.0 level 4 enh 0 fg 0 bits   3600 psnr 51.1661 mse 0.5676
+RC 25b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits   1008 psnr 51.1928 mse 0.5676
+RC 27b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits   1272 psnr 51.5805 mse 0.5012
+RC 30B (static scene) qp 151 qpa 151.0 level 4 enh 0 fg 0 bits   4048 psnr 51.2082 mse 0.5723
+RC 29b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits    728 psnr 51.2458 mse 0.5559
+RC 31b (static scene) qp 160 qpa 160.0 level 6 enh 0 fg 0 bits    952 psnr 52.1968 mse 0.4397
+RC 32O  qp 160 qpa 160.0 level 6 enh 0 fg 0 bits     24 psnr 54.3829 mse 0.2470

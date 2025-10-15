@@ -1,0 +1,48 @@
+[ENC] launch: E:\python\SAC\encoder\qav1enc --input E:/ftp/bhutan_1920x1080_25.yuv --input-res 1920x1080 --frames 0 --o ac_origins_test_cqp.ivf --csv ac_test_cqp.csv --rc-mode 1 --pass 2 --stat-in 1pass.log --stat-out 2pass.log --score-max 50.5 --score-avg 40.5 --score-min 38.5 --fps 25 --preset 1 --keyint 225 --bframes 15 --threads 1 --parallel-frames 1 --bitrate 2125
+[ENC] rl_dir=rl_io
+qav1 encoder 8bit library version : 2.0.0.12352 (rl_forward_20250901_203839_7265a3ecc) RELEASE
+-------------------------- QAV1 Encoding Parameters --------------------------
+Threads 1, Parallel frames 1, CPU flag: SSSE3,SSE42,AVX,AVX2,
+Profile Main, Level 4.0, Tier Main, Resolution 1920x1080, fps 25000/1000, allintra 0
+CP 1, CP Unspecified, TC Unspecified, MC Unspecified, UV_pos Unknown, Range tv,
+rc-mode ABR, mbtree 1, pass 2, rate-max 2125(kbps), score-avg/min 40.50/38.50, br-dec 3, Intra-period 225, GOP 16, tile 1x1,
+preset superfast, tune PSNR, enabled quality metric : PSNR,
+Deblock 1, EDO 0, CDEF 1, LR 0, FG 0, sb_size 128, sb_ref_max 1, RDOQ 0, range 64,
+------------------------------------------------------------------------------
+static idr ratio: 0.200000
+1pass argus avg delta 100.000000 
+1pass d_absdiff_score_avg: 3.778656  avg: 37.722710 
+1pass bit reduce feature: 1.565885
+1pass bit reduce feature adjust: 1pass qpbase 199 101613408/82195000  10.985235/5.795359 
+1pass qpbase 199 220
+1pass bit reduce feature score_est 37.795548 score_1pass 37.722710 vmaf_est 0.266830 scene_classify 6
+2pass chunk log: score_est 44.584285 - 0.072838 bits_lower_limit 107049489 * 1.005827 qav1_rc_bits_ratio_low 1.200000 
+b_exceeded 0, 107049489  82195000
+b_exceeded 0, i_qp_base 92 lower limit: 107049489 score_target 40.500000 score_est 44.584285 bits_est 374663445 qpbound 48 vamfest 12.807181 target 86.000000
+b_exceeded 0, i_qp_base 92 lower limit: 107049489 score_target 40.500000 score_est 44.584285 bits_est 374663445 qpbound 48 vamfest 12.807181 target 86.000000 param->rc.i_br_dec_level 3 
+b_exceeded 1, i_qp_base 92 lower limit: 107049489 score_target 40.500000 score_est 44.584285 bits_est 374663445 qpbound 48 vamfest 12.807181 target 86.000000
+2pass chunk log: score_est 40.746287 - 0.072838 bits_lower_limit 107049489 * 1.005827 qav1_rc_bits_ratio_low 1.200000 
+b_exceeded 0, 107049489  82195000
+b_exceeded 0, i_qp_base 156 lower limit: 107049489 score_target 40.500000 score_est 40.746287 bits_est 166308374 qpbound 48 vamfest 8.088808 target 86.000000
+b_exceeded 0, i_qp_base 156 lower limit: 107049489 score_target 40.500000 score_est 40.746287 bits_est 166308374 qpbound 48 vamfest 8.088808 target 86.000000 param->rc.i_br_dec_level 3 
+b_exceeded 1, i_qp_base 156 lower limit: 107049489 score_target 40.500000 score_est 40.746287 bits_est 166308374 qpbound 48 vamfest 8.088808 target 86.000000
+2pass chunk log: score_est 38.538797 - 0.072838 bits_lower_limit 107049489 * 1.005827 qav1_rc_bits_ratio_low 1.200000 
+b_exceeded 0, 107049489  82195000
+b_exceeded 0, i_qp_base 188 lower limit: 107049489 score_target 40.500000 score_est 38.538797 bits_est 113070656 qpbound 48 vamfest 2.778722 target 86.000000
+b_exceeded 0, i_qp_base 188 lower limit: 107049489 score_target 40.500000 score_est 38.538797 bits_est 113070656 qpbound 48 vamfest 2.778722 target 86.000000 param->rc.i_br_dec_level 3 
+b_exceeded 0, i_qp_base 188 lower limit: 107049489 score_target 40.500000 score_est 38.538797 bits_est 113070656 qpbound 48 vamfest 2.778722 target 86.000000
+2pass chunk log: score_est 39.656511 - 0.072838 bits_lower_limit 107049489 * 1.005827 qav1_rc_bits_ratio_low 1.200000 
+b_exceeded 0, 107049489  82195000
+b_exceeded 0, i_qp_base 172 lower limit: 107049489 score_target 40.500000 score_est 39.656511 bits_est 135842499 qpbound 48 vamfest 5.802314 target 86.000000
+b_exceeded 0, i_qp_base 172 lower limit: 107049489 score_target 40.500000 score_est 39.656511 bits_est 135842499 qpbound 48 vamfest 5.802314 target 86.000000 param->rc.i_br_dec_level 3 
+b_exceeded 0, i_qp_base 172 lower limit: 107049489 score_target 40.500000 score_est 39.656511 bits_est 135842499 qpbound 48 vamfest 5.802314 target 86.000000
+2pass chunk log: score_est 40.202542 - 0.072838 bits_lower_limit 107049489 * 1.005827 qav1_rc_bits_ratio_low 1.200000 
+b_exceeded 0, 107049489  82195000
+b_exceeded 0, i_qp_base 164 lower limit: 107049489 score_target 40.500000 score_est 40.202542 bits_est 150035122 qpbound 48 vamfest 7.018832 target 86.000000
+b_exceeded 0, i_qp_base 164 lower limit: 107049489 score_target 40.500000 score_est 40.202542 bits_est 150035122 qpbound 48 vamfest 7.018832 target 86.000000 param->rc.i_br_dec_level 3 
+b_exceeded 0, i_qp_base 164 lower limit: 107049489 score_target 40.500000 score_est 40.202542 bits_est 150035122 qpbound 48 vamfest 7.018832 target 86.000000
+2pass chunk log: score_est 40.485295 - 0.072838 bits_lower_limit 107049489 * 1.005827 qav1_rc_bits_ratio_low 1.200000 
+b_exceeded 0, 107049489  82195000
+b_exceeded 0, i_qp_base 160 lower limit: 107049489 score_target 40.500000 score_est 40.485295 bits_est 157990720 qpbound 48 vamfest 7.590806 target 86.000000
+b_exceeded 0, i_qp_base 160 lower limit: 107049489 score_target 40.500000 score_est 40.485295 bits_est 157990720 qpbound 48 vamfest 7.590806 target RC  0I  qp 30 qpa 30.0 level 0 enh 0 fg 0 bits 208056 psnr 60.6139 mse 0.0567
+RC  0O  qp 160 qpa 30.0 level 6 enh 0 fg 0 bits      0 psnr 56.5592 mse 0.1459

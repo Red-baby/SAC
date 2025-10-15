@@ -1,0 +1,24 @@
+[ENC] launch: ./encoder/qav1enc --input E:/ftp/bhutan_1920x1080_25.yuv --input-res 1920x1080 --frames 0 --o ac_origins_test_cqp.ivf --csv ac_test_cqp.csv --rc-mode 1 --pass 2 --stat-in 1pass.log --stat-out 2pass.log --score-max 50.5 --score-avg 40.5 --score-min 38.5 --fps 25 --preset 1 --keyint 225 --bframes 15 --threads 1 --parallel-frames 1 --bitrate 2125
+[ENC] rl_dir=./encoder/rl_io
+qav1 encoder 8bit library version : 2.0.0.12352 (rl_forward_20250901_203839_7265a3ecc) RELEASE
+-------------------------- QAV1 Encoding Parameters --------------------------
+Threads 1, Parallel frames 1, CPU flag: SSSE3,SSE42,AVX,AVX2,
+Profile Main, Level 4.0, Tier Main, Resolution 1920x1080, fps 25000/1000, allintra 0
+CP 1, CP Unspecified, TC Unspecified, MC Unspecified, UV_pos Unknown, Range tv,
+rc-mode ABR, mbtree 1, pass 2, rate-max 2125(kbps), score-avg/min 40.50/38.50, br-dec 3, Intra-period 225, GOP 16, tile 1x1,
+preset superfast, tune PSNR, enabled quality metric : PSNR,
+Deblock 1, EDO 0, CDEF 1, LR 0, FG 0, sb_size 128, sb_ref_max 1, RDOQ 0, range 64,
+------------------------------------------------------------------------------
+Can't open stat_in : 1pass.log
+stat-in init fail!
+Encoder open failed
+
+Layers          :  all  full    hv  hvab   hv4
+
+            Frames   PSNR_Y   PSNR_U   PSNR_V  PSNR_AVG  rate(kbps)
+
+
+max buf ratio: 0.00
+
+--------------------------------------------------------------------------------------------------------
+final Encode feature:PSNR(db)=0.00,SSIM=0.00,VMAF=0.00,Failed to open encoder.
