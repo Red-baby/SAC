@@ -54,23 +54,37 @@ class RewardComputer:
 
     def step(self, bits: float, score: float, bits_alloc: float, score_alloc: float, delta_qp: float, num_frames: int = 0) -> float:
         eps = 1e-6
-        dq_t_n = (float(score) - float(score_alloc)) / 100.0
-        if bits_alloc > 0:
-            db_t_n = (float(bits) - float(bits_alloc)) / max(float(bits_alloc), eps)
+        
+        # Calculate cumulative values including current step
+        cum_bits = self.gop_bits_sum + float(bits)
+        cum_score = self.gop_score_sum + float(score)
+        cum_bits_alloc = self.gop_bits_alloc_sum + max(float(bits_alloc), 0.0)
+        cum_score_alloc = self.gop_score_alloc_sum + max(float(score_alloc), 0.0)
+        
+        # Calculate cumulative normalized deviation
+        # dQ_cum: Cumulative Quality Deviation
+        dq_cum = (cum_score - cum_score_alloc) / 100.0
+        
+        # dB_cum: Cumulative Bitrate Deviation
+        if cum_bits_alloc > eps:
+            db_cum = (cum_bits - cum_bits_alloc) / cum_bits_alloc
         else:
-            db_t_n = 0.0
+            db_cum = 0.0
 
-        r = dq_t_n - self.lam * db_t_n - self.cfg.smooth_penalty * abs(float(delta_qp))
+        # Reward formula: Cumulative Quality - Lambda * Cumulative Bits
+        r = dq_cum - self.lam * db_cum
 
+        # Reward Shaping (Potential-based)
         ema_val = self.score_ema.update(float(score))
         phi_t = self.cfg.shaping_w_score_ema * (ema_val / 100.0)
         r += self.cfg.gamma * phi_t - self._phi_prev
         self._phi_prev = phi_t
 
-        self.gop_bits_sum  += float(bits)
-        self.gop_score_sum += float(score)
-        self.gop_bits_alloc_sum  += max(float(bits_alloc), 0.0)
-        self.gop_score_alloc_sum += max(float(score_alloc), 0.0)
+        # Update state
+        self.gop_bits_sum = cum_bits
+        self.gop_score_sum = cum_score
+        self.gop_bits_alloc_sum = cum_bits_alloc
+        self.gop_score_alloc_sum = cum_score_alloc
         self.gop_frames_sum += max(int(num_frames), 0)
         self.mg_in_gop += 1
 

@@ -413,6 +413,12 @@ class RLRunner:
 
                 # Reward step
                 r = self.rw.step(bits=bits, score=score, bits_alloc=bits_alloc, score_alloc=score_alloc, delta_qp=pend["delta_qp"], num_frames=num_frames)
+                
+                info = None
+                if gop_end:
+                    info = self.rw.on_gop_end()
+                    r += info['term_bonus']
+
                 print(
                     f"[MG][FB] ⑤ 接收反馈 -> {fb_path} | id={mg_id} "
                     f"bits={bits:.1f}(原{bits_alloc:.1f}) score={score:.3f}(原{score_alloc:.3f}) reward={r:.4f}"
@@ -452,8 +458,9 @@ class RLRunner:
                 self._last_delta = float(pend["delta_qp"])
 
                 # Episode end?
-                if gop_end:
-                    info = self.rw.on_gop_end()
+                if gop_end and info is not None:
+                    # info already calculated above
+                    self._last_mg_id = None
                     self._last_mg_id = None
                     
                     # 更新 epoch 统计
