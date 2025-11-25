@@ -36,6 +36,7 @@ class RewardComputer:
         self.gop_score_sum = 0.0
         self.gop_bits_alloc_sum = 0.0
         self.gop_score_alloc_sum = 0.0
+        self.gop_frames_sum = 0  # 累计帧数
 
         self.mg_in_gop = 0
         self.episode_return = 0.0
@@ -45,12 +46,13 @@ class RewardComputer:
         self.gop_score_sum = 0.0
         self.gop_bits_alloc_sum = 0.0
         self.gop_score_alloc_sum = 0.0
+        self.gop_frames_sum = 0
         self.mg_in_gop = 0
         self.episode_return = 0.0
         self._phi_prev = 0.0
         self.score_ema = EMA(beta=0.9, init=0.0)
 
-    def step(self, bits: float, score: float, bits_alloc: float, score_alloc: float, delta_qp: float) -> float:
+    def step(self, bits: float, score: float, bits_alloc: float, score_alloc: float, delta_qp: float, num_frames: int = 0) -> float:
         eps = 1e-6
         dq_t_n = (float(score) - float(score_alloc)) / 100.0
         if bits_alloc > 0:
@@ -69,6 +71,7 @@ class RewardComputer:
         self.gop_score_sum += float(score)
         self.gop_bits_alloc_sum  += max(float(bits_alloc), 0.0)
         self.gop_score_alloc_sum += max(float(score_alloc), 0.0)
+        self.gop_frames_sum += max(int(num_frames), 0)
         self.mg_in_gop += 1
 
         self.episode_return += float(r)
@@ -97,6 +100,7 @@ class RewardComputer:
             "sum_score": self.gop_score_sum,
             "sum_score_alloc": Q_alloc_T,
             "delta_score_norm": dQ_T_norm,
+            "num_frames": self.gop_frames_sum,
             "lambda": self.lam,
             "term_bonus": term,
             "episode_return": self.episode_return,

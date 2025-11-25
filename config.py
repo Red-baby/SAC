@@ -15,6 +15,7 @@ class Config:
     show_encoder_output: bool = False
     encoder_log_to_file: bool = True
     encoder_log_dir: str = "./logs/encoder"
+    fps: float = 25.0  # 帧率，用于计算 kbps
 
     # MG / QP
     frames_per_mg: int = 16
@@ -47,7 +48,6 @@ class Config:
     start_steps: int = 500
     updates_per_step: int = 1
     seed: int = 42
-    ckpt_path: str = "./checkpoints/sac_actor.pt"
     baseline_stats_path: Optional[str] = None
 
     # Reward / constraint
@@ -58,5 +58,17 @@ class Config:
     term_tau: float = 0.01
     shaping_w_score_ema: float = 0.05
 
+    # Checkpoint
+    ckpt_dir: str = "./checkpoints"
+    ckpt_interval: int = 5  # 每 N 个 epoch 保存一次
+    save_replay_buffer: bool = True  # 是否保存 replay buffer
+    load_checkpoint: Optional[str] = None  # 加载检查点路径
+    
     # Logging
+    log_level: int = 1  # 0=静默, 1=简洁, 2=详细, 3=调试
     log_interval_mg: int = 20
+    
+    # TensorBoard
+    use_tensorboard: bool = True
+    tensorboard_dir: str = "./runs"
+    tb_log_interval: int = 1  # 每 N 个训练步记录一次

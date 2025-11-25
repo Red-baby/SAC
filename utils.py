@@ -20,7 +20,33 @@ def safe_write_json_atomic(path: str, obj):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False)
         f.write("\n")
-    os.replace(tmp, path)
+    
+    # 重试机制处理 Windows 文件锁问题
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            # 如果目标文件存在且被占用，先尝试删除
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except PermissionError:
+                    if attempt < max_retries - 1:
+                        time.sleep(0.01 * (attempt + 1))  # 递增等待时间
+                        continue
+                    else:
+                        raise
+            os.replace(tmp, path)
+            break
+        except PermissionError as e:
+            if attempt < max_retries - 1:
+                time.sleep(0.01 * (attempt + 1))
+            else:
+                # 最后一次尝试失败，清理临时文件并抛出异常
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+                raise e
 
 def pad_or_trim(arr, T, fill=0.0):
     arr = list(arr) if arr is not None else []
