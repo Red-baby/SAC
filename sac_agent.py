@@ -17,7 +17,11 @@ class SACAgent:
         self.log_alpha = torch.tensor(math.log(cfg.init_alpha), device=self.device, requires_grad=True)
         self.opt_alpha = torch.optim.Adam([self.log_alpha], lr=cfg.lr_alpha)
         self.gamma = cfg.gamma; self.tau = cfg.tau
-        self.target_entropy = -1.0 if cfg.target_entropy == 0.0 else cfg.target_entropy
+        # target_entropy 需要根据 action 维度调整（现在是 seq_T 维）
+        if cfg.target_entropy == 0.0:
+            self.target_entropy = -float(seq_T)  # 默认值：-seq_T（每维 -1）
+        else:
+            self.target_entropy = cfg.target_entropy
 
     @torch.no_grad()
     def act(self, seq1c_t, scalars, deterministic=False):
@@ -69,7 +73,7 @@ class SACAgent:
                 pt.data.mul_(1.0 - self.tau).add_(self.tau * p.data)
 
         return (float(loss_q.item()), float(loss_actor.item()), float(alpha.detach().cpu()))
-    
+     
     def save_checkpoint(self, path: str) -> None:
         """保存模型检查点"""
         import os

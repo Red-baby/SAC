@@ -2,8 +2,8 @@
 """
 MiniGOP I/O runner:
 - Watch rl_dir for mg????_rq.json / mg????_fb.json (encoder handshake via rl_sync.*)
-- Build a [C=5, T] feature block via state.build_state_from_rq
-- Actor outputs ΔQP (scalar per MG). We clamp baseqp+ΔQP to [qp_min, qp_max] and write mg????_qp.json
+- Build a [C=6, T] feature block via state.build_state_from_rq (channels: poise, comp, rdcost, score_target, bit_target, q_val/256)
+- Actor outputs ΔQP per frame (mg_size deltas). We apply each ΔQP to corresponding frame's q_val and write mg????_qp.json with {"q_vals": [...]}
 - Reward: per-MG via reward.RewardComputer.step; episode ends when fb.gop_end == 1
 """
 import os, glob, time, json, numpy as np, torch
@@ -280,40 +280,59 @@ class RLRunner:
                         score_ema=self.rw.score_ema.get(),
                         last_delta=getattr(self, "_last_delta", 0.0),
                     )
-                    seq, scalars, baseqp, mg_id, mg_size, bits_alloc, score_alloc = build_state_from_rq(
+                    seq, scalars, q_vals, mg_id, mg_size, bits_alloc, score_alloc = build_state_from_rq(
                         self.cfg, rq, g_state
                     )
                     if self.agent is None:
                         self._ensure_models(seq.shape, scalars.shape[0])
 
                     self._mg_seen = max(self._mg_seen, mg_id + 1)
-                    self._log(2, f"[MG][RQ] ① 接收请求 -> {rq_path} | id={mg_id} size={mg_size} base_qp={baseqp}")
+                    avg_q_val = float(np.mean(q_vals)) if len(q_vals) > 0 else 0.0
+                    self._log(2, f"[MG][RQ] ① 接收请求 -> {rq_path} | id={mg_id} size={mg_size} avg_q_val={avg_q_val:.2f}")
 
                     # Action
                     seq1 = torch.from_numpy(seq).unsqueeze(0).to(self.cfg.device).float()
                     sca1 = torch.from_numpy(scalars).unsqueeze(0).to(self.cfg.device).float()
                     if self.total_steps < self.cfg.start_steps:
-                        a_norm = float(np.random.uniform(-1, 1))
+                        # 探索：为每帧生成随机 delta
+                        a_norm = np.random.uniform(-1, 1, size=(seq.shape[1],)).astype(np.float32)
                         act_src = "explore"
                     else:
                         a_t, _ = self.agent.act(seq1, sca1, deterministic=False)
-                        a_norm = float(a_t.squeeze().detach().cpu().numpy())
+                        # a_t: [1, seq_T]，提取为 numpy array
+                        a_norm = a_t.squeeze(0).detach().cpu().numpy().astype(np.float32)  # [seq_T]
                         act_src = "policy"
-                    delta_qp = int(round(a_norm * self.cfg.delta_qp_max))
-                    qp_new = int(np.clip(baseqp + delta_qp, self.cfg.qp_min, self.cfg.qp_max))
-                    self._log(2, f"[MG][ACT] ② 决策动作 -> id={mg_id} src={act_src} delta_qp={delta_qp:+d} qp={qp_new} (base={baseqp})")
+                    
+                    # 提取前 mg_size 个 delta（因为 mg_size 可能小于 seq_T）
+                    delta_norm = a_norm[:mg_size]  # [mg_size]
+                    # 将归一化的 delta 转换为实际的 delta_qp
+                    delta_qps = delta_norm * self.cfg.delta_qp_max  # [mg_size]
+                    
+                    # 为每一帧生成新的 q_val：q_val_new = clip(q_val_old + delta_qp, q_val_min, q_val_max)
+                    # q_vals 长度已经是 mg_size
+                    q_vals_new = np.clip(q_vals[:mg_size] + delta_qps, self.cfg.q_val_min, self.cfg.q_val_max).astype(np.float32)
+                    
+                    # 计算平均 q_val 和平均 delta 用于日志
+                    avg_q_val_new = float(np.mean(q_vals_new))
+                    avg_q_val_old = float(np.mean(q_vals[:mg_size]))
+                    avg_delta_qp = float(np.mean(delta_qps))
+                    self._log(2, f"[MG][ACT] ② 决策动作 -> id={mg_id} src={act_src} avg_delta_qp={avg_delta_qp:+.2f} avg_q_val={avg_q_val_old:.2f}->{avg_q_val_new:.2f}")
 
-                    # Write QP json for this mg
+                    # Write QP json for this mg (新格式：q_vals 数组)
                     qp_path = rq_path.replace("_rq.json", "_qp.json")
-                    safe_write_json_atomic(qp_path, {"qp": int(qp_new)})
-                    self._log(3, f"[MG][QP] ③ 写入决策 -> {qp_path}")
+                    q_vals_list = [float(q) for q in q_vals_new]
+                    safe_write_json_atomic(qp_path, {"q_vals": q_vals_list})
+                    self._log(3, f"[MG][QP] ③ 写入决策 -> {qp_path} (q_vals={len(q_vals_list)} frames)")
 
                     # Stash pending (we'll fill next_state upon next rq)
+                    # 存储完整的 action（seq_T 维），用于 replay buffer
+                    a_full = np.zeros(seq.shape[1], dtype=np.float32)  # [seq_T]
+                    a_full[:mg_size] = a_norm[:mg_size]
                     self.pending[mg_id] = dict(
                         seq=seq,
                         scalars=scalars,
-                        a=np.array([a_norm], dtype=np.float32),
-                        delta_qp=delta_qp,
+                        a=a_full,  # [seq_T] 维的 action
+                        delta_qp=avg_delta_qp,  # 用于 reward 计算（保持标量）
                         bits_alloc=bits_alloc,
                         score_alloc=score_alloc,
                     )

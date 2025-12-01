@@ -17,10 +17,12 @@ class Config:
     encoder_log_dir: str = "./logs/encoder"
     fps: float = 25.0  # 帧率，用于计算 kbps
 
-    # MG / QP
+    # MG / QP / Q_VAL
     frames_per_mg: int = 16
-    qp_min: int = 48
-    qp_max: int = 252
+    qp_min: int = 48  # 保留用于向后兼容
+    qp_max: int = 252  # 保留用于向后兼容
+    q_val_min: float = 10.0  # q_val 的最小值
+    q_val_max: float = 430.0  # q_val 的最大值
     delta_qp_max: int = 10
 
     # Preproc (feature)

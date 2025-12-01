@@ -8,7 +8,8 @@ class ReplayBuffer:
         C, T = state_seq_shape
         self._seq = np.zeros((capacity, C, T), dtype=np.float32)
         self._sca = np.zeros((capacity, state_scalar_dim), dtype=np.float32)
-        self._a   = np.zeros((capacity, 1), dtype=np.float32)
+        # action 维度改为 T（每帧一个 delta）
+        self._a   = np.zeros((capacity, T), dtype=np.float32)
         self._r   = np.zeros((capacity, 1), dtype=np.float32)
         self._seq2= np.zeros((capacity, C, T), dtype=np.float32)
         self._sca2= np.zeros((capacity, state_scalar_dim), dtype=np.float32)
