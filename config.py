@@ -23,7 +23,7 @@ class Config:
     qp_max: int = 252  # 保留用于向后兼容
     q_val_min: float = 10.0  # q_val 的最小值
     q_val_max: float = 430.0  # q_val 的最大值
-    delta_qp_max: int = 10
+    delta_qp_max: int = 100
 
     # Preproc (feature)
     apply_log_comp: bool = True
@@ -46,8 +46,8 @@ class Config:
 
     # Training
     batch_size: int = 128
-    replay_size: int = 200_000
-    start_steps: int = 500
+    replay_size: int = 500
+    start_steps: int = 100
     updates_per_step: int = 1
     seed: int = 42
     baseline_stats_path: Optional[str] = None
