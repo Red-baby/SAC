@@ -119,6 +119,7 @@ class RLRunner:
                 smooth_penalty=cfg.smooth_penalty,
                 lambda_init=cfg.lambda_init,
                 lambda_lr=cfg.lambda_lr,
+                bitrate_tolerance=cfg.bitrate_tolerance,
                 shaping_w_score_ema=cfg.shaping_w_score_ema,
                 term_bonus=cfg.term_bonus,
                 term_tau=cfg.term_tau,

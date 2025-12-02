@@ -23,7 +23,7 @@ class Config:
     qp_max: int = 252  # 保留用于向后兼容
     q_val_min: float = 10.0  # q_val 的最小值
     q_val_max: float = 430.0  # q_val 的最大值
-    delta_qp_max: int = 100
+    delta_qp_max: int = 50
 
     # Preproc (feature)
     apply_log_comp: bool = True
@@ -54,8 +54,9 @@ class Config:
 
     # Reward / constraint
     smooth_penalty: float = 0.02
-    lambda_init: float = 0.0
-    lambda_lr: float = 1e-4
+    lambda_init: float = 0.3
+    lambda_lr: float = 5e-3
+    bitrate_tolerance: float = 0.10  # 允许码率在 +/-10% 波动区间内不计惩罚
     term_bonus: float = 0.5
     term_tau: float = 0.01
     shaping_w_score_ema: float = 0.05
