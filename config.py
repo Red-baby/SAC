@@ -21,9 +21,9 @@ class Config:
     frames_per_mg: int = 16
     qp_min: int = 48  # 保留用于向后兼容
     qp_max: int = 252  # 保留用于向后兼容
-    q_val_min: float = 10.0  # q_val 的最小值
-    q_val_max: float = 430.0  # q_val 的最大值
-    delta_qp_max: int = 50
+    q_val_min: float = 50.0  # q_val 的最小值
+    q_val_max: float = 330.0  # q_val 的最大值
+    delta_qp_max: int = 20
 
     # Preproc (feature)
     apply_log_comp: bool = True
@@ -46,31 +46,31 @@ class Config:
 
     # Training
     batch_size: int = 128
-    replay_size: int = 500
-    start_steps: int = 100
-    updates_per_step: int = 1
+    replay_size: int = 2000
+    start_steps: int = 10
+    updates_per_step: int = 4
     seed: int = 42
     baseline_stats_path: Optional[str] = None
 
     # Reward / constraint
     smooth_penalty: float = 0.02
-    lambda_init: float = 0.3
-    lambda_lr: float = 5e-3
+    lambda_init: float = 1.0
+    lambda_lr: float = 1e-2
     bitrate_tolerance: float = 0.10  # 允许码率在 +/-10% 波动区间内不计惩罚
-    term_bonus: float = 0.5
+    term_bonus: float = 0
     term_tau: float = 0.01
-    shaping_w_score_ema: float = 0.05
+    shaping_w_score_ema: float = 0
 
     # Checkpoint
     ckpt_dir: str = "./checkpoints"
     ckpt_interval: int = 5  # 每 N 个 epoch 保存一次
     save_replay_buffer: bool = True  # 是否保存 replay buffer
     load_checkpoint: Optional[str] = None  # 加载检查点路径
-    
+
     # Logging
     log_level: int = 1  # 0=静默, 1=简洁, 2=详细, 3=调试
     log_interval_mg: int = 20
-    
+
     # TensorBoard
     use_tensorboard: bool = True
     tensorboard_dir: str = "./runs"
