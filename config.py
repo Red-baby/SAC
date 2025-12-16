@@ -21,9 +21,12 @@ class Config:
     frames_per_mg: int = 16
     qp_min: int = 48  # 保留用于向后兼容
     qp_max: int = 252  # 保留用于向后兼容
-    q_val_min: float = 50.0  # q_val 的最小值
-    q_val_max: float = 330.0  # q_val 的最大值
-    delta_qp_max: int = 20
+    q_val_min: float = 20.0  # q_val 的最小值
+    q_val_max: float = 160.0  # q_val 的最大值
+    delta_qp_max: int = 15
+
+    q_val_max: float = 160.0  # q_val maximum
+    delta_qp_max: int = 15
 
     # Preproc (feature)
     apply_log_comp: bool = True
@@ -54,10 +57,13 @@ class Config:
 
     # Reward / constraint
     smooth_penalty: float = 0.02
-    lambda_init: float = 1.0
+    lambda_init: float = 5.0
     lambda_lr: float = 1e-2
     bitrate_tolerance: float = 0.10  # 允许码率在 +/-10% 波动区间内不计惩罚
     term_bonus: float = 0
+    bitrate_hard_ratio: float = 0.05  # hard cap: strictly penalize when > +5% over reference
+    over_bitrate_penalty: float = 50.0  # pure-bit penalty scale for excess over hard cap
+    term_bonus: float = 0.0
     term_tau: float = 0.01
     shaping_w_score_ema: float = 0
 
@@ -67,9 +73,12 @@ class Config:
     save_replay_buffer: bool = True  # 是否保存 replay buffer
     load_checkpoint: Optional[str] = None  # 加载检查点路径
 
+    save_replay_buffer: bool = True  # whether to save replay buffer
+
     # Logging
     log_level: int = 1  # 0=静默, 1=简洁, 2=详细, 3=调试
     log_interval_mg: int = 20
+    log_delta_qvals: bool = False  # print per-MG delta_qps list
 
     # TensorBoard
     use_tensorboard: bool = True

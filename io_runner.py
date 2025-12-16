@@ -120,6 +120,8 @@ class RLRunner:
                 lambda_init=cfg.lambda_init,
                 lambda_lr=cfg.lambda_lr,
                 bitrate_tolerance=cfg.bitrate_tolerance,
+                bitrate_hard_ratio=cfg.bitrate_hard_ratio,
+                over_bitrate_penalty=cfg.over_bitrate_penalty,
                 shaping_w_score_ema=cfg.shaping_w_score_ema,
                 term_bonus=cfg.term_bonus,
                 term_tau=cfg.term_tau,
@@ -312,11 +314,17 @@ class RLRunner:
                     # 为每一帧生成新的 q_val：q_val_new = clip(q_val_old + delta_qp, q_val_min, q_val_max)
                     # q_vals 长度已经是 mg_size
                     q_vals_new = np.clip(q_vals[:mg_size] + delta_qps, self.cfg.q_val_min, self.cfg.q_val_max).astype(np.float32)
+                    if bool(getattr(self.cfg, "log_delta_qvals", False)):
+                        delta_list = [float(f"{d:+.2f}") for d in delta_qps.tolist()]
+                        self._log(2, f"[MG][DELTA_QVAL] id={mg_id} delta_qps={delta_list}")
                     
                     # 计算平均 q_val 和平均 delta 用于日志
                     avg_q_val_new = float(np.mean(q_vals_new))
                     avg_q_val_old = float(np.mean(q_vals[:mg_size]))
                     avg_delta_qp = float(np.mean(delta_qps))
+                    # 详细打印编码器端和 RL 侧的 q_val 序列（仅在 log_level>=3 时输出）
+                    self._log(3, f"[MG][QVAL] enc_q_vals(id={mg_id}): {q_vals[:mg_size].tolist()}")
+                    self._log(3, f"[MG][QVAL] rl_q_vals(id={mg_id}):  {q_vals_new.tolist()}")
                     self._log(2, f"[MG][ACT] ② 决策动作 -> id={mg_id} src={act_src} avg_delta_qp={avg_delta_qp:+.2f} avg_q_val={avg_q_val_old:.2f}->{avg_q_val_new:.2f}")
 
                     # Write QP json for this mg (新格式：q_vals 数组)
