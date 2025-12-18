@@ -3,7 +3,8 @@
 MiniGOP I/O runner:
 - Watch rl_dir for mg????_rq.json / mg????_fb.json (encoder handshake via rl_sync.*)
 - Build a [C=6, T] feature block via state.build_state_from_rq (channels: poise, comp, rdcost, score_target, bit_target, q_val/256)
-- Actor outputs ΔQP per frame (mg_size deltas). We apply each ΔQP to corresponding frame's q_val and write mg????_qp.json with {"q_vals": [...]}
+- Actor outputs 5 deltas (对应 5 个时域等级：1, 2, 3, 4, 6). 根据每帧的 temporal_level 映射对应的 delta 到该帧，然后应用到 q_val
+- Write mg????_qp.json with {"q_vals": [...]}
 - Reward: per-MG via reward.RewardComputer.step; episode ends when fb.gop_end == 1
 """
 import os, glob, time, json, numpy as np, torch
@@ -283,7 +284,7 @@ class RLRunner:
                         score_ema=self.rw.score_ema.get(),
                         last_delta=getattr(self, "_last_delta", 0.0),
                     )
-                    seq, scalars, q_vals, mg_id, mg_size, bits_alloc, score_alloc = build_state_from_rq(
+                    seq, scalars, q_vals, temporal_level, mg_id, mg_size, bits_alloc, score_alloc = build_state_from_rq(
                         self.cfg, rq, g_state
                     )
                     if self.agent is None:
@@ -296,27 +297,38 @@ class RLRunner:
                     # Action
                     seq1 = torch.from_numpy(seq).unsqueeze(0).to(self.cfg.device).float()
                     sca1 = torch.from_numpy(scalars).unsqueeze(0).to(self.cfg.device).float()
+                    
+                    # 时域等级到索引的映射：1->0, 2->1, 3->2, 4->3, 6->4
+                    def level_to_idx(level):
+                        level_map = {1: 0, 2: 1, 3: 2, 4: 3, 6: 4}
+                        return level_map.get(int(level), 4)  # 默认映射到 6（索引4）
+                    
                     if self.total_steps < self.cfg.start_steps:
-                        # 探索：为每帧生成随机 delta
-                        a_norm = np.random.uniform(-1, 1, size=(seq.shape[1],)).astype(np.float32)
+                        # 探索：为 5 个时域等级生成随机 delta
+                        a_norm = np.random.uniform(-1, 1, size=(5,)).astype(np.float32)
                         act_src = "explore"
                     else:
                         a_t, _ = self.agent.act(seq1, sca1, deterministic=False)
-                        # a_t: [1, seq_T]，提取为 numpy array
-                        a_norm = a_t.squeeze(0).detach().cpu().numpy().astype(np.float32)  # [seq_T]
+                        # a_t: [1, 5]，提取为 numpy array（对应 5 个时域等级）
+                        a_norm = a_t.squeeze(0).detach().cpu().numpy().astype(np.float32)  # [5]
                         act_src = "policy"
                     
-                    # 提取前 mg_size 个 delta（因为 mg_size 可能小于 seq_T）
-                    delta_norm = a_norm[:mg_size]  # [mg_size]
-                    # 将归一化的 delta 转换为实际的 delta_qp
-                    delta_qps = delta_norm * self.cfg.delta_qp_max  # [mg_size]
+                    # 根据每帧的 temporal_level，将对应的 delta 应用到该帧
+                    # temporal_level 长度是 mg_size
+                    delta_qps = np.zeros(mg_size, dtype=np.float32)
+                    for i in range(mg_size):
+                        level_idx = level_to_idx(temporal_level[i])
+                        delta_norm = a_norm[level_idx]
+                        delta_qps[i] = delta_norm * self.cfg.delta_qp_max
                     
                     # 为每一帧生成新的 q_val：q_val_new = clip(q_val_old + delta_qp, q_val_min, q_val_max)
                     # q_vals 长度已经是 mg_size
                     q_vals_new = np.clip(q_vals[:mg_size] + delta_qps, self.cfg.q_val_min, self.cfg.q_val_max).astype(np.float32)
                     if bool(getattr(self.cfg, "log_delta_qvals", False)):
                         delta_list = [float(f"{d:+.2f}") for d in delta_qps.tolist()]
-                        self._log(2, f"[MG][DELTA_QVAL] id={mg_id} delta_qps={delta_list}")
+                        level_list = temporal_level[:mg_size].tolist()
+                        delta_by_level = {level: float(f"{a_norm[level_to_idx(level)] * self.cfg.delta_qp_max:+.2f}") for level in [1, 2, 3, 4, 6]}
+                        self._log(2, f"[MG][DELTA_QVAL] id={mg_id} temporal_level={level_list} delta_qps={delta_list} delta_by_level={delta_by_level}")
                     
                     # 计算平均 q_val 和平均 delta 用于日志
                     avg_q_val_new = float(np.mean(q_vals_new))
@@ -334,13 +346,11 @@ class RLRunner:
                     self._log(3, f"[MG][QP] ③ 写入决策 -> {qp_path} (q_vals={len(q_vals_list)} frames)")
 
                     # Stash pending (we'll fill next_state upon next rq)
-                    # 存储完整的 action（seq_T 维），用于 replay buffer
-                    a_full = np.zeros(seq.shape[1], dtype=np.float32)  # [seq_T]
-                    a_full[:mg_size] = a_norm[:mg_size]
+                    # 存储 action（5 维，对应 5 个时域等级），用于 replay buffer
                     self.pending[mg_id] = dict(
                         seq=seq,
                         scalars=scalars,
-                        a=a_full,  # [seq_T] 维的 action
+                        a=a_norm.copy(),  # [5] 维的 action（对应 5 个时域等级）
                         delta_qp=avg_delta_qp,  # 用于 reward 计算（保持标量）
                         bits_alloc=bits_alloc,
                         score_alloc=score_alloc,

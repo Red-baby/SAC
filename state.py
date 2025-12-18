@@ -3,7 +3,7 @@ import numpy as np
 from typing import Tuple
 from utils import pad_or_trim, log_process
 
-def build_state_from_rq(cfg, rq: dict, g_state: dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int, int, float, float]:
+def build_state_from_rq(cfg, rq: dict, g_state: dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int, float, float]:
     """
     Returns:
       seq: [C=6, T] with order [poise, comp, rdcost, score_target, bit_target, q_val/256]
@@ -11,6 +11,7 @@ def build_state_from_rq(cfg, rq: dict, g_state: dict) -> Tuple[np.ndarray, np.nd
                         d_bits_ratio,  i_bits_alloc,  i_bits_gop_alloc,
                         mg_pos_abs, score_ema/100, last_delta/delta_qp_max]
       q_vals: [mg_size] 当前 minigop 内每一帧的 q_val（原始值，未归一化）
+      temporal_level: [mg_size] 当前 minigop 内每一帧的时域等级 [1,2,3,4,6]
       mg_id, mg_size, bits_alloc(gop), score_alloc(gop)
     """
     T = int(getattr(cfg, "frames_per_mg", 16))
@@ -71,8 +72,17 @@ def build_state_from_rq(cfg, rq: dict, g_state: dict) -> Tuple[np.ndarray, np.nd
     else:
         baseqp_fallback = float(rq.get("baseqp", rq.get("base_q", 0.0)))
         q_vals_original = np.full(mg_size, baseqp_fallback, dtype=np.float32)
+    
+    # 读取 temporal_level（时域等级）
+    temporal_level_raw = rq.get("temporal_level", [])
+    if len(temporal_level_raw) > 0:
+        # 确保长度为 mg_size，不足则用最后一个值填充，超出则截断
+        temporal_level = pad_or_trim(temporal_level_raw, mg_size, temporal_level_raw[-1] if len(temporal_level_raw) > 0 else 6).astype(np.int32)
+    else:
+        # 如果没有提供，默认填充为 6
+        temporal_level = np.full(mg_size, 6, dtype=np.int32)
 
     bits_alloc = i_bits_gop_alloc if i_bits_gop_alloc > 0 else i_bits_alloc
     score_alloc = d_score_gop_alloc if d_score_gop_alloc > 0 else d_score_alloc
 
-    return seq, scalars, q_vals_original, mg_id, mg_size, bits_alloc, score_alloc
+    return seq, scalars, q_vals_original, temporal_level, mg_id, mg_size, bits_alloc, score_alloc

@@ -17,9 +17,9 @@ class SACAgent:
         self.log_alpha = torch.tensor(math.log(cfg.init_alpha), device=self.device, requires_grad=True)
         self.opt_alpha = torch.optim.Adam([self.log_alpha], lr=cfg.lr_alpha)
         self.gamma = cfg.gamma; self.tau = cfg.tau
-        # target_entropy 需要根据 action 维度调整（现在是 seq_T 维）
+        # target_entropy 需要根据 action 维度调整（现在是 5 维，对应 5 个时域等级）
         if cfg.target_entropy == 0.0:
-            self.target_entropy = -float(seq_T)  # 默认值：-seq_T（每维 -1）
+            self.target_entropy = -5.0  # 默认值：-5（每维 -1）
         else:
             self.target_entropy = cfg.target_entropy
 

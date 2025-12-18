@@ -45,29 +45,29 @@ class Actor(nn.Module):
     def __init__(self, state_scalar_dim, in_channels=6, seq_T=16, hidden=512):  # 更新为 6 通道
         super().__init__()
         self.enc = FeatureEncoder(in_channels, seq_T, state_scalar_dim, hidden)
-        # 输出 seq_T 个 delta（每帧一个）
-        self.mu = nn.Linear(hidden, seq_T)
-        self.log_std = nn.Linear(hidden, seq_T)
+        # 输出 5 个 delta（对应 5 个时域等级：1, 2, 3, 4, 6）
+        self.mu = nn.Linear(hidden, 5)
+        self.log_std = nn.Linear(hidden, 5)
         self.LOG_STD_MIN, self.LOG_STD_MAX = -5.0, 2.0
 
     def forward(self, seq_bc_t, scalars):
         h = self.enc(seq_bc_t, scalars)
-        mu = self.mu(h)  # [B, seq_T]
-        log_std = self.log_std(h).clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)  # [B, seq_T]
+        mu = self.mu(h)  # [B, 5]
+        log_std = self.log_std(h).clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)  # [B, 5]
         return mu, log_std
 
 class Critic(nn.Module):
     def __init__(self, state_scalar_dim, in_channels=6, seq_T=16, hidden=512):  # 更新为 6 通道
         super().__init__()
-        # action 维度现在是 seq_T，所以 scalar_dim + seq_T
-        self.enc1 = FeatureEncoder(in_channels, seq_T, state_scalar_dim+seq_T, hidden)
-        self.enc2 = FeatureEncoder(in_channels, seq_T, state_scalar_dim+seq_T, hidden)
+        # action 维度现在是 5（对应 5 个时域等级），所以 scalar_dim + 5
+        self.enc1 = FeatureEncoder(in_channels, seq_T, state_scalar_dim+5, hidden)
+        self.enc2 = FeatureEncoder(in_channels, seq_T, state_scalar_dim+5, hidden)
         self.q1 = nn.Linear(hidden, 1)
         self.q2 = nn.Linear(hidden, 1)
 
     def forward(self, seq_bc_t, scalars, a):
-        # a: [B, seq_T], scalars: [B, state_scalar_dim]
-        s1 = torch.cat([scalars, a], dim=-1)  # [B, state_scalar_dim + seq_T]
+        # a: [B, 5], scalars: [B, state_scalar_dim]
+        s1 = torch.cat([scalars, a], dim=-1)  # [B, state_scalar_dim + 5]
         s2 = torch.cat([scalars, a], dim=-1)
         h1 = self.enc1(seq_bc_t, s1)
         h2 = self.enc2(seq_bc_t, s2)
