@@ -9,13 +9,13 @@ from dataset import add_dataset_args, build_cmds_from_dataset
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rl-dir", type=str, default=Config.rl_dir)
-    ap.add_argument("--epochs", type=int, default=2)
+    ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--start-epoch", type=int, default=1)
     ap.add_argument("--mode", type=str, default="train", choices=["train","infer"])
     ap.add_argument("--encoder", type=str, default=Config.encoder_path)
     ap.add_argument("--device", type=str, default=None,
                     help="PyTorch 设备，例如 cpu、cuda、cuda:0；默认自动检测")
-    ap.add_argument("--baseline-stats", type=str, default="./encoder/raw2pass.log",
+    ap.add_argument("--baseline-stats", type=str, default="/rl/new_2pass_basic.log",
                     help="基线帧统计日志路径，用于比较 bits/score")
     ap.add_argument("--fps", type=float, default=None,
                     help="视频帧率（用于计算 kbps），如果未指定则从编码器命令中提取")
@@ -42,15 +42,15 @@ def parse_args():
 
     # 单视频命令模式（每条内部用 | 分隔）
     ap.add_argument("--videos", type=str, nargs="+", default=[
-        "--input|E:/ftp/bhutan_1920x1080_25.yuv"
+        "--input|/rl/park_mobile_1920x1080_24.yuv"
         "|--input-res|1920x1080|--frames|0"
         "|--o|ac_origins_test_cqp.ivf"
         "|--csv|ac_test_cqp.csv"
         "|--rc-mode|1|--pass|2"
-        "|--stat-in|1pass.log"
+        "|--stat-in|/rl/park_mobile1pass.log"
         "|--stat-out|2pass.log"
         "|--score-max|50.5|--score-avg|40.5|--score-min|38.5"
-        "|--fps|25|--preset|1|--keyint|225|--bframes|15|--threads|1|--parallel-frames|1"
+        "|--fps|24|--preset|7|--keyint|120|--bframes|15|--threads|64|--parallel-frames|1"
         "|--bitrate|2125"
     ])
 
