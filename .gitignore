@@ -1,0 +1,11 @@
+__pycache__
+.idea
+checkpoints
+logs
+*.pyc
+.vscode
+.DS_Store
+env
+Lib
+runs
+Scripts
