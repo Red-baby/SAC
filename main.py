@@ -211,6 +211,7 @@ def main():
         device=device, 
         baseline_stats_path=baseline_path,
         fps=fps,
+        mode=args.mode,  # "train" or "infer"
         ckpt_dir=args.ckpt_dir,
         ckpt_interval=args.ckpt_interval,
         load_checkpoint=args.load_checkpoint,
@@ -226,6 +227,21 @@ def main():
 
     os.makedirs(cfg.rl_dir, exist_ok=True)
     os.makedirs(cfg.ckpt_dir, exist_ok=True)
+    
+    # 显示运行模式
+    mode_display = "训练(TRAIN)" if cfg.mode == "train" else "推理(INFER)"
+    print(f"[MAIN] ========================================")
+    print(f"[MAIN] 运行模式: {mode_display}")
+    print(f"[MAIN] 设备: {cfg.device}")
+    if cfg.mode == "infer":
+        print(f"[MAIN] 推理模式特性:")
+        print(f"[MAIN]   - 使用确定性策略 (deterministic=True)")
+        print(f"[MAIN]   - 不保存模型检查点")
+    else:
+        print(f"[MAIN] 训练模式特性:")
+        print(f"[MAIN]   - 使用随机策略 (deterministic=False)")
+        print(f"[MAIN]   - 每 {cfg.ckpt_interval} 个 epoch 保存检查点")
+    print(f"[MAIN] ========================================")
     
     runner = RLRunner(cfg)
     
@@ -248,12 +264,13 @@ def main():
             for cmd_argv in cmds:
                 run_one(runner, cfg, cmd_argv, epoch_id=eid, epoch_total=len(cmds))
                 eid += 1
-            # 每隔 N 个 epoch 保存一次
-            if cfg.ckpt_interval > 0 and (ep % cfg.ckpt_interval) == 0:
+            # 每隔 N 个 epoch 保存一次（仅训练模式）
+            if cfg.mode == "train" and cfg.ckpt_interval > 0 and (ep % cfg.ckpt_interval) == 0:
                 save_full_checkpoint(runner, ep, cfg)
         print("[MAIN] dataset mode finished.")
-        # 保存最终模型
-        save_full_checkpoint(runner, end_ep, cfg)
+        # 保存最终模型（仅训练模式）
+        if cfg.mode == "train":
+            save_full_checkpoint(runner, end_ep, cfg)
     else:
         epoch_total = (end_ep - start_ep + 1) * max(1, len(args.videos))
         eid = start_ep
@@ -262,12 +279,13 @@ def main():
                 argv = _split_cmd_bar(cmd_bar)
                 run_one(runner, cfg, argv, epoch_id=eid, epoch_total=epoch_total)
                 eid += 1
-            # 每隔 N 个 epoch 保存一次
-            if cfg.ckpt_interval > 0 and (ep % cfg.ckpt_interval) == 0:
+            # 每隔 N 个 epoch 保存一次（仅训练模式）
+            if cfg.mode == "train" and cfg.ckpt_interval > 0 and (ep % cfg.ckpt_interval) == 0:
                 save_full_checkpoint(runner, ep, cfg)
         print("[MAIN] single-video list finished.")
-        # 保存最终模型
-        save_full_checkpoint(runner, end_ep, cfg)
+        # 保存最终模型（仅训练模式）
+        if cfg.mode == "train":
+            save_full_checkpoint(runner, end_ep, cfg)
 
 if __name__ == "__main__":
     try:

@@ -69,6 +69,9 @@ class Config:
     save_replay_buffer: bool = True  # 是否保存 replay buffer
     load_checkpoint: Optional[str] = None  # 加载检查点路径
 
+    # Mode
+    mode: str = "train"  # "train" or "infer"
+    
     # Logging
     log_level: int = 2  # 0=静默, 1=简洁, 2=详细, 3=调试
     log_interval_mg: int = 20

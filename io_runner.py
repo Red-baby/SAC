@@ -301,10 +301,12 @@ class RLRunner:
                         a_norm = np.random.uniform(-1, 1, size=(seq.shape[1],)).astype(np.float32)
                         act_src = "explore"
                     else:
-                        a_t, _ = self.agent.act(seq1, sca1, deterministic=False)
+                        # 推理模式使用 deterministic=True（模拟部署），训练模式使用 False（保留探索）
+                        use_deterministic = (self.cfg.mode == "infer")
+                        a_t, _ = self.agent.act(seq1, sca1, deterministic=use_deterministic)
                         # a_t: [1, seq_T]，提取为 numpy array
                         a_norm = a_t.squeeze(0).detach().cpu().numpy().astype(np.float32)  # [seq_T]
-                        act_src = "policy"
+                        act_src = "policy" if not use_deterministic else "policy_det"
                     
                     # 提取前 mg_size 个 delta（因为 mg_size 可能小于 seq_T）
                     delta_norm = a_norm[:mg_size]  # [mg_size]
