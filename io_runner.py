@@ -308,10 +308,12 @@ class RLRunner:
                         a_norm = np.random.uniform(-1, 1, size=(5,)).astype(np.float32)
                         act_src = "explore"
                     else:
-                        a_t, _ = self.agent.act(seq1, sca1, deterministic=False)
+                        # 推理模式使用 deterministic=True（模拟部署），训练模式使用 False（保留探索）
+                        use_deterministic = (self.cfg.mode == "infer")
+                        a_t, _ = self.agent.act(seq1, sca1, deterministic=use_deterministic)
                         # a_t: [1, 5]，提取为 numpy array（对应 5 个时域等级）
                         a_norm = a_t.squeeze(0).detach().cpu().numpy().astype(np.float32)  # [5]
-                        act_src = "policy"
+                        act_src = "policy" if not use_deterministic else "policy_det"
                     
                     # 根据每帧的 temporal_level，将对应的 delta 应用到该帧
                     # temporal_level 长度是 mg_size
