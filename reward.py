@@ -34,6 +34,7 @@ class RewardComputer:
         self.lam = float(cfg.lambda_init)
         self.score_ema = EMA(beta=0.9, init=0.0)
         self._phi_prev = 0.0
+        self._db_cum_prev = 0.0
 
         self.gop_bits_sum = 0.0
         self.gop_score_sum = 0.0
@@ -53,6 +54,7 @@ class RewardComputer:
         self.mg_in_gop = 0
         self.episode_return = 0.0
         self._phi_prev = 0.0
+        self._db_cum_prev = 0.0
         self.score_ema = EMA(beta=0.9, init=0.0)
 
     def step(self, bits: float, score: float, bits_alloc: float, score_alloc: float, delta_qp: float, num_frames: int = 0) -> float:
@@ -66,9 +68,8 @@ class RewardComputer:
         cum_bits_alloc = self.gop_bits_alloc_sum + max(float(bits_alloc), 0.0)
         cum_score_alloc = self.gop_score_alloc_sum + max(float(score_alloc), 0.0)
         
-        # Calculate cumulative normalized deviation
-        # dQ_cum: Cumulative Quality Deviation
-        dq_cum = (cum_score - cum_score_alloc) / 100.0
+        # Use per-step quality delta to avoid early penalty dominating the rest of the GOP.
+        dq_step = (float(score) - float(score_alloc)) / 100.0
         
         # dB_cum: Cumulative Bitrate Deviation
         if cum_bits_alloc > eps:
@@ -81,12 +82,17 @@ class RewardComputer:
         #   ignoring objective quality (score) to avoid bitrate/quality tradeoff.
         # - Otherwise, only compare objective quality (score), ignoring bitrate penalty entirely.
         if db_cum_raw > hard_ratio:
-            db_excess = db_cum_raw - hard_ratio
-            r = -over_penalty * db_excess
+            # Penalize only the *incremental* excess to prevent early overshoot
+            # from causing a persistent negative reward across the whole GOP.
+            prev_excess = max(0.0, self._db_cum_prev - hard_ratio)
+            curr_excess = db_cum_raw - hard_ratio
+            delta_excess = max(0.0, curr_excess - prev_excess)
+            r = -over_penalty * delta_excess
             apply_shaping = False
         else:
-            r = dq_cum
+            r = dq_step
             apply_shaping = True
+        self._db_cum_prev = db_cum_raw
 
         # Reward Shaping (Potential-based)
         if apply_shaping and self.cfg.shaping_w_score_ema != 0.0:

@@ -6,6 +6,17 @@ MiniGOP I/O runner:
 - Actor outputs 5 deltas (对应 5 个时域等级：1, 2, 3, 4, 6). 根据每帧的 temporal_level 映射对应的 delta 到该帧，然后应用到 q_val
 - Write mg????_qp.json with {"q_vals": [...]}
 - Reward: per-MG via reward.RewardComputer.step; episode ends when fb.gop_end == 1
+
+【重要时序逻辑】Replay buffer push 时机：
+1. RQ_t 到达 → 构建 s_t，输出 a_t，写 QP，暂存 pending[t] = {seq, scalars, a, ...}
+2. 如果 pending[t-1] 已有 "reward" 字段（说明 FB_{t-1} 已到）：
+   - 用 s_t 作为 s'，push (s_{t-1}, a_{t-1}, r_{t-1}, s_t, done_{t-1})
+   - 删除 pending[t-1]
+3. FB_t 到达 → 计算 r_t 和 done_t，记录到 pending[t]["reward"], pending[t]["done"]
+   - 如果 done_t == True（episode 结束）：直接 push (s_t, a_t, r_t, zeros, True)，删除 pending[t]
+   - 否则：等待下一个 RQ 来补齐 s'
+
+这样确保所有非终止步都有正确的 next_state，避免用全 0 的 s' 训练。
 """
 import os, glob, time, json, numpy as np, torch
 from collections import defaultdict
@@ -255,126 +266,130 @@ class RLRunner:
         idle_loops = 0
         consecutive_idle_count = 0  # 连续空闲计数
         max_consecutive_idle = 300  # 连续空闲 300 次（约 3 秒）后检查是否应该退出
-        waiting_for_fb = False  # 标记是否正在等待 FB
-        fb_wait_start_time = None  # FB 等待开始时间（用于显示等待时长）
         
         while not stop_evt.is_set():
             progressed = False
 
-            # 如果正在等待 FB，优先处理 FB，不处理新的 RQ
-            if not waiting_for_fb:
-                # Handle RQ - 每次只处理一个 RQ
-                rq_files = _scan_mg_rq_files(rl_dir)
-                if rq_files:
-                    rq_path = rq_files[0]  # 只取第一个
-                    try:
-                        rq = safe_read_json(rq_path)
-                        if rq_path in rq_read_failures:
-                            rq_read_failures.pop(rq_path, None)
-                    except Exception as e:
-                        rq_read_failures[rq_path] += 1
-                        fail_cnt = rq_read_failures[rq_path]
-                        if fail_cnt <= 3 or (fail_cnt % 10) == 0:
-                            self._log(2, f"[RL][WARN] bad rq (retry #{fail_cnt}): {rq_path}: {e}")
-                        time.sleep(self.cfg.poll_ms / 1000.0)
-                        continue
+            # Handle RQ - 每次只处理一个 RQ
+            rq_files = _scan_mg_rq_files(rl_dir)
+            if rq_files:
+                rq_path = rq_files[0]  # 只取第一个
+                try:
+                    rq = safe_read_json(rq_path)
+                    if rq_path in rq_read_failures:
+                        rq_read_failures.pop(rq_path, None)
+                except Exception as e:
+                    rq_read_failures[rq_path] += 1
+                    fail_cnt = rq_read_failures[rq_path]
+                    if fail_cnt <= 3 or (fail_cnt % 10) == 0:
+                        self._log(2, f"[RL][WARN] bad rq (retry #{fail_cnt}): {rq_path}: {e}")
+                    time.sleep(self.cfg.poll_ms / 1000.0)
+                    continue
 
-                    # Build state
-                    g_state = dict(
-                        score_ema=self.rw.score_ema.get(),
-                        last_delta=getattr(self, "_last_delta", 0.0),
-                    )
-                    seq, scalars, q_vals, temporal_level, mg_id, mg_size, bits_alloc, score_alloc = build_state_from_rq(
-                        self.cfg, rq, g_state
-                    )
-                    if self.agent is None:
-                        self._ensure_models(seq.shape, scalars.shape[0])
+                # Build state
+                g_state = dict(
+                    score_ema=self.rw.score_ema.get(),
+                    last_delta=getattr(self, "_last_delta", 0.0),
+                )
+                seq, scalars, q_vals, temporal_level, mg_id, mg_size, bits_alloc, score_alloc = build_state_from_rq(
+                    self.cfg, rq, g_state
+                )
+                if self.agent is None:
+                    self._ensure_models(seq.shape, scalars.shape[0])
 
-                    self._mg_seen = max(self._mg_seen, mg_id + 1)
-                    avg_q_val = float(np.mean(q_vals)) if len(q_vals) > 0 else 0.0
-                    self._log(2, f"[MG][RQ] ① 接收请求 -> {rq_path} | id={mg_id} size={mg_size} avg_q_val={avg_q_val:.2f}")
+                self._mg_seen = max(self._mg_seen, mg_id + 1)
+                avg_q_val = float(np.mean(q_vals)) if len(q_vals) > 0 else 0.0
+                self._log(2, f"[MG][RQ] ① 接收请求 -> {rq_path} | id={mg_id} size={mg_size} avg_q_val={avg_q_val:.2f}")
+                
+                # 【关键修改】如果上一个 MG 已经收到 FB（有 reward 字段），用当前 state 作为其 s'，并 push
+                if self._last_mg_id is not None and self._last_mg_id in self.pending:
+                    prev = self.pending[self._last_mg_id]
+                    if "reward" in prev:
+                        # 上一个 transition 已经有 reward 了，现在补齐 s' 并 push
+                        self.buf.push(
+                            prev["seq"], prev["scalars"], prev["a"], 
+                            prev["reward"], 
+                            seq, scalars,  # 用当前 RQ 的 state 作为 s'
+                            prev["done"]
+                        )
+                        self._log(3, f"[Replay] Push transition: mg_id={self._last_mg_id} -> {mg_id} (done={prev['done']})")
+                        # 删除已经 push 的 pending
+                        self.pending.pop(self._last_mg_id)
+                        self._last_mg_id = None
 
-                    # Action
-                    seq1 = torch.from_numpy(seq).unsqueeze(0).to(self.cfg.device).float()
-                    sca1 = torch.from_numpy(scalars).unsqueeze(0).to(self.cfg.device).float()
+                # Action
+                seq1 = torch.from_numpy(seq).unsqueeze(0).to(self.cfg.device).float()
+                sca1 = torch.from_numpy(scalars).unsqueeze(0).to(self.cfg.device).float()
+                
+                # 时域等级到索引的映射：1->0, 2->1, 3->2, 4->3, 6->4
+                def level_to_idx(level):
+                    level_map = {1: 0, 2: 1, 3: 2, 4: 3, 6: 4}
+                    return level_map.get(int(level), 4)  # 默认映射到 6（索引4）
+                
+                if self.total_steps < self.cfg.start_steps:
+                    # 探索：为 5 个时域等级生成随机 delta
+                    a_norm = np.random.uniform(-1, 1, size=(5,)).astype(np.float32)
+                    act_src = "explore"
+                else:
+                    # 推理模式使用 deterministic=True（模拟部署），训练模式使用 False（保留探索）
+                    use_deterministic = (self.cfg.mode == "infer")
+                    a_t, _ = self.agent.act(seq1, sca1, deterministic=use_deterministic)
+                    # a_t: [1, 5]，提取为 numpy array（对应 5 个时域等级）
+                    a_norm = a_t.squeeze(0).detach().cpu().numpy().astype(np.float32)  # [5]
+                    act_src = "policy" if not use_deterministic else "policy_det"
                     
-                    # 时域等级到索引的映射：1->0, 2->1, 3->2, 4->3, 6->4
-                    def level_to_idx(level):
-                        level_map = {1: 0, 2: 1, 3: 2, 4: 3, 6: 4}
-                        return level_map.get(int(level), 4)  # 默认映射到 6（索引4）
-                    
-                    if self.total_steps < self.cfg.start_steps:
-                        # 探索：为 5 个时域等级生成随机 delta
-                        a_norm = np.random.uniform(-1, 1, size=(5,)).astype(np.float32)
-                        act_src = "explore"
-                    else:
-                        # 推理模式使用 deterministic=True（模拟部署），训练模式使用 False（保留探索）
-                        use_deterministic = (self.cfg.mode == "infer")
-                        a_t, _ = self.agent.act(seq1, sca1, deterministic=use_deterministic)
-                        # a_t: [1, 5]，提取为 numpy array（对应 5 个时域等级）
-                        a_norm = a_t.squeeze(0).detach().cpu().numpy().astype(np.float32)  # [5]
-                        act_src = "policy" if not use_deterministic else "policy_det"
-                    
-                    # 根据每帧的 temporal_level，将对应的 delta 应用到该帧
-                    # temporal_level 长度是 mg_size
-                    delta_qps = np.zeros(mg_size, dtype=np.float32)
-                    for i in range(mg_size):
-                        level_idx = level_to_idx(temporal_level[i])
-                        delta_norm = a_norm[level_idx]
-                        delta_qps[i] = delta_norm * self.cfg.delta_qp_max
-                    
-                    # 为每一帧生成新的 q_val：q_val_new = clip(q_val_old + delta_qp, q_val_min, q_val_max)
-                    # q_vals 长度已经是 mg_size
-                    q_vals_new = np.clip(q_vals[:mg_size] + delta_qps, self.cfg.q_val_min, self.cfg.q_val_max).astype(np.float32)
-                    if bool(getattr(self.cfg, "log_delta_qvals", False)):
-                        delta_list = [float(f"{d:+.2f}") for d in delta_qps.tolist()]
-                        level_list = temporal_level[:mg_size].tolist()
-                        delta_by_level = {level: float(f"{a_norm[level_to_idx(level)] * self.cfg.delta_qp_max:+.2f}") for level in [1, 2, 3, 4, 6]}
-                        self._log(2, f"[MG][DELTA_QVAL] id={mg_id} temporal_level={level_list} delta_qps={delta_list} delta_by_level={delta_by_level}")
-                    
-                    # 计算平均 q_val 和平均 delta 用于日志
-                    avg_q_val_new = float(np.mean(q_vals_new))
-                    avg_q_val_old = float(np.mean(q_vals[:mg_size]))
-                    avg_delta_qp = float(np.mean(delta_qps))
-                    # 详细打印编码器端和 RL 侧的 q_val 序列（仅在 log_level>=3 时输出）
-                    self._log(3, f"[MG][QVAL] enc_q_vals(id={mg_id}): {q_vals[:mg_size].tolist()}")
-                    self._log(3, f"[MG][QVAL] rl_q_vals(id={mg_id}):  {q_vals_new.tolist()}")
-                    self._log(2, f"[MG][ACT] ② 决策动作 -> id={mg_id} src={act_src} avg_delta_qp={avg_delta_qp:+.2f} avg_q_val={avg_q_val_old:.2f}->{avg_q_val_new:.2f}")
+                # 根据每帧的 temporal_level，将对应的 delta 应用到该帧
+                # temporal_level 长度是 mg_size
+                delta_qps = np.zeros(mg_size, dtype=np.float32)
+                for i in range(mg_size):
+                    level_idx = level_to_idx(temporal_level[i])
+                    delta_norm = a_norm[level_idx]
+                    delta_qps[i] = delta_norm * self.cfg.delta_qp_max
+                
+                # 为每一帧生成新的 q_val：q_val_new = clip(q_val_old + delta_qp, q_val_min, q_val_max)
+                # q_vals 长度已经是 mg_size
+                q_vals_new = np.clip(q_vals[:mg_size] + delta_qps, self.cfg.q_val_min, self.cfg.q_val_max).astype(np.float32)
+                if bool(getattr(self.cfg, "log_delta_qvals", False)):
+                    delta_list = [float(f"{d:+.2f}") for d in delta_qps.tolist()]
+                    level_list = temporal_level[:mg_size].tolist()
+                    delta_by_level = {level: float(f"{a_norm[level_to_idx(level)] * self.cfg.delta_qp_max:+.2f}") for level in [1, 2, 3, 4, 6]}
+                    self._log(2, f"[MG][DELTA_QVAL] id={mg_id} temporal_level={level_list} delta_qps={delta_list} delta_by_level={delta_by_level}")
+                
+                # 计算平均 q_val 和平均 delta 用于日志
+                avg_q_val_new = float(np.mean(q_vals_new))
+                avg_q_val_old = float(np.mean(q_vals[:mg_size]))
+                avg_delta_qp = float(np.mean(delta_qps))
+                # 详细打印编码器端和 RL 侧的 q_val 序列（仅在 log_level>=3 时输出）
+                self._log(3, f"[MG][QVAL] enc_q_vals(id={mg_id}): {q_vals[:mg_size].tolist()}")
+                self._log(3, f"[MG][QVAL] rl_q_vals(id={mg_id}):  {q_vals_new.tolist()}")
+                self._log(2, f"[MG][ACT] ② 决策动作 -> id={mg_id} src={act_src} avg_delta_qp={avg_delta_qp:+.2f} avg_q_val={avg_q_val_old:.2f}->{avg_q_val_new:.2f}")
 
-                    # Write QP json for this mg (新格式：q_vals 数组)
-                    qp_path = rq_path.replace("_rq.json", "_qp.json")
-                    q_vals_list = [float(q) for q in q_vals_new]
-                    safe_write_json_atomic(qp_path, {"q_vals": q_vals_list})
-                    self._log(3, f"[MG][QP] ③ 写入决策 -> {qp_path} (q_vals={len(q_vals_list)} frames)")
+                # Write QP json for this mg (新格式：q_vals 数组)
+                qp_path = rq_path.replace("_rq.json", "_qp.json")
+                q_vals_list = [float(q) for q in q_vals_new]
+                safe_write_json_atomic(qp_path, {"q_vals": q_vals_list})
+                self._log(3, f"[MG][QP] ③ 写入决策 -> {qp_path} (q_vals={len(q_vals_list)} frames)")
 
-                    # Stash pending (we'll fill next_state upon next rq)
-                    # 存储 action（5 维，对应 5 个时域等级），用于 replay buffer
-                    self.pending[mg_id] = dict(
-                        seq=seq,
-                        scalars=scalars,
-                        a=a_norm.copy(),  # [5] 维的 action（对应 5 个时域等级）
-                        delta_qp=avg_delta_qp,  # 用于 reward 计算（保持标量）
-                        bits_alloc=bits_alloc,
-                        score_alloc=score_alloc,
-                    )
-                    if self._last_mg_id is not None and self._last_mg_id in self.pending:
-                        prev = self.pending[self._last_mg_id]
-                        prev["next_seq"] = seq
-                        prev["next_scalars"] = scalars
-                    self._last_mg_id = mg_id
-                    
-                    # 立即删除已处理的 RQ 文件
-                    try:
-                        os.remove(rq_path)
-                        self._log(3, f"[MG][RQ] ④ 删除请求 -> {rq_path}")
-                    except Exception as e:
-                        self._log(2, f"[MG][WARN] 删除 RQ 失败: {e}")
-                    
-                    # 现在等待对应的 FB
-                    waiting_for_fb = True
-                    fb_wait_start_time = time.time()
-                    self._log(3, f"[MG] >>> 等待 mg{mg_id:04d} 的反馈 (FB)...")
-                    progressed = True
+                # 【新逻辑】暂存当前 MG 的 state 和 action，等待 FB 补齐 reward
+                self.pending[mg_id] = dict(
+                    seq=seq,
+                    scalars=scalars,
+                    a=a_norm.copy(),  # [5] 维的 action（对应 5 个时域等级）
+                    delta_qp=avg_delta_qp,  # 用于 reward 计算（保持标量）
+                    bits_alloc=bits_alloc,
+                    score_alloc=score_alloc,
+                    # reward 和 done 将在 FB 到来时填充
+                )
+                self._last_mg_id = mg_id
+                
+                # 立即删除已处理的 RQ 文件
+                try:
+                    os.remove(rq_path)
+                    self._log(3, f"[MG][RQ] ④ 删除请求 -> {rq_path}")
+                except Exception as e:
+                    self._log(2, f"[MG][WARN] 删除 RQ 失败: {e}")
+                
+                progressed = True
 
             # Handle FB
             for fb_path in _scan_mg_fb_files(rl_dir):
@@ -464,18 +479,25 @@ class RLRunner:
                     f"bits={bits:.1f}(原{bits_alloc:.1f}) score={score:.3f}(原{score_alloc:.3f}) reward={r:.4f}"
                 )
 
-                # Replay push
-                seq = pend["seq"]
-                sca = pend["scalars"]
-                a = pend["a"]
-                done = gop_end
-                if "next_seq" in pend:
-                    seq2 = pend["next_seq"]
-                    sca2 = pend["next_scalars"]
-                else:
-                    seq2 = np.zeros_like(seq)
+                # 【新逻辑】在 pending 中记录 reward 和 done
+                pend["reward"] = r
+                pend["done"] = gop_end
+                
+                # 如果是终止步（done=True），直接 push（不需要真实的 s'）
+                if gop_end:
+                    seq = pend["seq"]
+                    sca = pend["scalars"]
+                    a = pend["a"]
+                    seq2 = np.zeros_like(seq)  # 终止步的 s' 不重要
                     sca2 = np.zeros_like(sca)
-                self.buf.push(seq, sca, a, r, seq2, sca2, done)
+                    self.buf.push(seq, sca, a, r, seq2, sca2, done=True)
+                    self._log(3, f"[Replay] Push terminal transition: mg_id={mg_id} (done=True)")
+                    # 删除已 push 的 pending
+                    self.pending.pop(mg_id)
+                    self._last_mg_id = None
+                else:
+                    # 非终止步，等待下一个 RQ 来补齐 s'（pending 保留，不 pop）
+                    self._log(3, f"[Replay] Waiting for next RQ to complete transition: mg_id={mg_id}")
 
                 # Train
                 self.total_steps += 1
@@ -499,10 +521,6 @@ class RLRunner:
 
                 # Episode end?
                 if gop_end and info is not None:
-                    # info already calculated above
-                    self._last_mg_id = None
-                    self._last_mg_id = None
-                    
                     # 更新 epoch 统计
                     self.epoch_episodes += 1
                     self.epoch_total_reward += info['episode_return']
@@ -563,10 +581,7 @@ class RLRunner:
                 except Exception as e:
                     self._log(2, f"[MG][WARN] 删除 FB 失败: {e}")
 
-                # FB 处理完毕，可以处理下一个 RQ 了
-                waiting_for_fb = False
-                fb_wait_start_time = None
-                self._log(2, f"[MG] <<< 反馈已处理，准备接收下一个请求 (RQ)...\n")
+                self._log(2, f"[MG] <<< 反馈已处理，继续处理 RQ/FB...\n")
                 progressed = True
 
             if not progressed:
@@ -575,12 +590,7 @@ class RLRunner:
                 
                 # 每秒打印一次等待信息
                 if idle_loops * self.cfg.poll_ms >= 1000:
-                    wait_status = "等待FB" if waiting_for_fb else "等待RQ"
-                    if waiting_for_fb and fb_wait_start_time is not None:
-                        wait_elapsed = time.time() - fb_wait_start_time
-                        self._log(3, f"[MG][WAIT] {wait_status} (已等待 {wait_elapsed:.1f}s, pending={len(self.pending)}, last_mg={self._last_mg_id})")
-                    else:
-                        self._log(3, f"[MG][WAIT] {wait_status} (pending={len(self.pending)}, last_mg={self._last_mg_id})")
+                    self._log(3, f"[MG][WAIT] 等待 RQ/FB (pending={len(self.pending)}, last_mg={self._last_mg_id})")
                     idle_loops = 0
                     
                     # 检查编码器是否已退出
@@ -609,16 +619,17 @@ class RLRunner:
         
         # serve_loop 退出前的状态检查和清理
         print(f"\n[Run] RL loop 收到停止信号 (编码器已退出)")
-        self._log(1, f"[Run] 当前状态: pending={len(self.pending)}, waiting_for_fb={waiting_for_fb}, total_mg_seen={self._mg_seen}")
+        self._log(1, f"[Run] 当前状态: pending={len(self.pending)}, total_mg_seen={self._mg_seen}")
         
-        # 检查是否在等待 FB 时编码器退出
-        if waiting_for_fb and self._last_mg_id is not None:
-            wait_duration = time.time() - fb_wait_start_time if fb_wait_start_time else 0
-            self._log(1, f"[Run][WARN] 编码器退出时，RL 正在等待 mg{self._last_mg_id:04d} 的反馈 (FB)")
-            self._log(1, f"[Run][WARN] 已等待 {wait_duration:.1f}s，但编码器未发送该 FB（可能编码器异常退出或编码已完成）")
-            if self._last_mg_id in self.pending:
-                self._log(1, f"[Run] 清理未完成的 MG: {self._last_mg_id}")
-                self.pending.pop(self._last_mg_id)
+        # 检查是否有待处理的 pending（可能是编码器意外退出）
+        if self._last_mg_id is not None and self._last_mg_id in self.pending:
+            pend = self.pending[self._last_mg_id]
+            if "reward" in pend:
+                self._log(1, f"[Run][WARN] 编码器退出时，MG {self._last_mg_id} 已收到 FB 但未收到后续 RQ 补齐 s'")
+            else:
+                self._log(1, f"[Run][WARN] 编码器退出时，MG {self._last_mg_id} 尚未收到 FB")
+            self._log(1, f"[Run] 清理未完成的 MG: {self._last_mg_id}")
+            self.pending.pop(self._last_mg_id)
         
         # 清理其他残留的 pending 项
         if len(self.pending) > 0:
