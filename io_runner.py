@@ -442,7 +442,8 @@ class RLRunner:
                         self._log(2, f"[MG][WARN] failed to delete orphan fb: {del_e}")
                     continue
 
-                pend = self.pending.pop(mg_id)
+                # 【修复】不要立即 pop，先获取引用，后续根据情况再决定是否删除
+                pend = self.pending[mg_id]
                 bits = float(fb.get("bits", 0.0))
                 score = float(fb.get("score", 0.0))
                 bits_alloc = float(pend.get("bits_alloc", 0.0))
@@ -497,6 +498,7 @@ class RLRunner:
                     self._last_mg_id = None
                 else:
                     # 非终止步，等待下一个 RQ 来补齐 s'（pending 保留，不 pop）
+                    # pend 已经是 self.pending[mg_id] 的引用，修改会自动同步
                     self._log(3, f"[Replay] Waiting for next RQ to complete transition: mg_id={mg_id}")
 
                 # Train
