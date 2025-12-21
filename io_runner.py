@@ -326,17 +326,22 @@ class RLRunner:
                     level_map = {1: 0, 2: 1, 3: 2, 4: 3, 6: 4}
                     return level_map.get(int(level), 4)  # 默认映射到 6（索引4）
                 
-                if self.total_steps < self.cfg.start_steps:
-                    # 探索：为 5 个时域等级生成随机 delta
+                # 推理模式：始终使用确定性策略，不探索
+                # 训练模式：前 start_steps 步随机探索，之后使用随机策略
+                if self.cfg.mode == "infer":
+                    # 推理模式：确定性策略，不探索
+                    a_t, _ = self.agent.act(seq1, sca1, deterministic=True)
+                    a_norm = a_t.squeeze(0).detach().cpu().numpy().astype(np.float32)
+                    act_src = "policy_det"
+                elif self.total_steps < self.cfg.start_steps:
+                    # 训练模式 - 探索阶段：随机 delta
                     a_norm = np.random.uniform(-1, 1, size=(5,)).astype(np.float32)
                     act_src = "explore"
                 else:
-                    # 推理模式使用 deterministic=True（模拟部署），训练模式使用 False（保留探索）
-                    use_deterministic = (self.cfg.mode == "infer")
-                    a_t, _ = self.agent.act(seq1, sca1, deterministic=use_deterministic)
-                    # a_t: [1, 5]，提取为 numpy array（对应 5 个时域等级）
-                    a_norm = a_t.squeeze(0).detach().cpu().numpy().astype(np.float32)  # [5]
-                    act_src = "policy" if not use_deterministic else "policy_det"
+                    # 训练模式 - 策略阶段：使用随机策略（保留探索噪声）
+                    a_t, _ = self.agent.act(seq1, sca1, deterministic=False)
+                    a_norm = a_t.squeeze(0).detach().cpu().numpy().astype(np.float32)
+                    act_src = "policy"
                     
                 # 根据每帧的 temporal_level，将对应的 delta 应用到该帧
                 # temporal_level 长度是 mg_size
@@ -501,9 +506,9 @@ class RLRunner:
                     # pend 已经是 self.pending[mg_id] 的引用，修改会自动同步
                     self._log(3, f"[Replay] Waiting for next RQ to complete transition: mg_id={mg_id}")
 
-                # Train
+                # Train（仅训练模式，推理模式跳过）
                 self.total_steps += 1
-                if self.total_steps >= self.cfg.start_steps and len(self.buf) >= self.cfg.batch_size:
+                if self.cfg.mode == "train" and self.total_steps >= self.cfg.start_steps and len(self.buf) >= self.cfg.batch_size:
                     for _ in range(self.cfg.updates_per_step):
                         b = self.buf.sample(self.cfg.batch_size, self.cfg.device)
                         loss_q, loss_actor, alpha = self.agent.train_step(b)

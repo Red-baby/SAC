@@ -115,4 +115,13 @@ class SACAgent:
         self.opt_alpha = torch.optim.Adam([self.log_alpha], lr=self.cfg.lr_alpha)
         self.opt_alpha.load_state_dict(checkpoint['opt_alpha_state_dict'])
         
+        # 恢复 SAC 超参数（gamma, tau, target_entropy）
+        if 'gamma' in checkpoint:
+            self.gamma = checkpoint['gamma']
+        if 'tau' in checkpoint:
+            self.tau = checkpoint['tau']
+        if 'target_entropy' in checkpoint:
+            self.target_entropy = checkpoint['target_entropy']
+        
         print(f"[Checkpoint] 已加载模型 <- {path}")
+        print(f"[Checkpoint] 恢复参数: gamma={self.gamma}, tau={self.tau}, target_entropy={self.target_entropy}")

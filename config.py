@@ -23,7 +23,7 @@ class Config:
     qp_max: int = 252  # 保留用于向后兼容
     q_val_min: float = 20.0  # q_val 的最小值
     q_val_max: float = 160.0  # q_val 的最大值
-    delta_qp_max: int = 0
+    delta_qp_max: int = 20
 
     # Preproc (feature)
     apply_log_comp: bool = True
