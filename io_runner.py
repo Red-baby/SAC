@@ -316,6 +316,9 @@ class RLRunner:
                         # 删除已经 push 的 pending
                         self.pending.pop(self._last_mg_id)
                         self._last_mg_id = None
+                    else:
+                        # 上一个MG还没有reward，无法闭合transition
+                        self._log(1, f"[Replay][WARN] prev mg_id={self._last_mg_id} has no reward yet; cannot build transition")
 
                 # Action
                 seq1 = torch.from_numpy(seq).unsqueeze(0).to(self.cfg.device).float()
@@ -376,6 +379,9 @@ class RLRunner:
                 self._log(3, f"[MG][QP] ③ 写入决策 -> {qp_path} (q_vals={len(q_vals_list)} frames)")
 
                 # 【新逻辑】暂存当前 MG 的 state 和 action，等待 FB 补齐 reward
+                if mg_id in self.pending:
+                    # GOP重置或乱序可能导致覆盖
+                    self._log(1, f"[Replay][WARN] pending already has mg_id={mg_id}; overwriting (pending_keys={list(self.pending.keys())})")
                 self.pending[mg_id] = dict(
                     seq=seq,
                     scalars=scalars,
@@ -491,6 +497,8 @@ class RLRunner:
                 
                 # 如果是终止步（done=True），直接 push（不需要真实的 s'）
                 if gop_end:
+                    if len(self.pending) > 1:
+                        self._log(1, f"[Replay][WARN] gop_end with other pending MGs: {list(self.pending.keys())}")
                     seq = pend["seq"]
                     sca = pend["scalars"]
                     a = pend["a"]
