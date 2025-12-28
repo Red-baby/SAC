@@ -9,7 +9,7 @@ class ReplayBuffer:
         self._seq = np.zeros((capacity, C, T), dtype=np.float32)
         self._sca = np.zeros((capacity, state_scalar_dim), dtype=np.float32)
         # action 维度改为 5（对应 5 个时域等级：1, 2, 3, 4, 6）
-        self._a   = np.zeros((capacity, 5), dtype=np.float32)
+        self._a   = np.zeros((capacity, 5), dtype=np.int32)
         self._r   = np.zeros((capacity, 1), dtype=np.float32)
         self._seq2= np.zeros((capacity, C, T), dtype=np.float32)
         self._sca2= np.zeros((capacity, state_scalar_dim), dtype=np.float32)
@@ -31,7 +31,7 @@ class ReplayBuffer:
         idx = np.random.randint(0, self._n, size=(batch_size,))
         seq  = torch.from_numpy(self._seq[idx]).to(device)
         sca  = torch.from_numpy(self._sca[idx]).to(device)
-        a    = torch.from_numpy(self._a[idx]).to(device)
+        a    = torch.from_numpy(self._a[idx]).to(device).long()
         r    = torch.from_numpy(self._r[idx]).to(device)
         seq2 = torch.from_numpy(self._seq2[idx]).to(device)
         sca2 = torch.from_numpy(self._sca2[idx]).to(device)

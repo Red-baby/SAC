@@ -71,28 +71,24 @@ class RewardComputer:
         # Use per-step quality delta to avoid early penalty dominating the rest of the GOP.
         dq_step = (float(score) - float(score_alloc)) / 100.0
         
-        # dB_cum: Cumulative Bitrate Deviation
-        if cum_bits_alloc > eps:
-            db_cum_raw = (cum_bits - cum_bits_alloc) / cum_bits_alloc
+        # dB_step: per-MG bitrate deviation (do not use GOP cumulative for penalty)
+        if bits_alloc > eps:
+            db_step_raw = (float(bits) - float(bits_alloc)) / float(bits_alloc)
         else:
-            db_cum_raw = 0.0
+            db_step_raw = 0.0
         # Apply tolerance band so small抖动不影响奖励；超出±bit_tol部分才计入惩罚/奖励
         # Two-stage reward:
         # - If bitrate exceeds reference by > hard_ratio (e.g. 5%), apply a strict pure-bit penalty,
         #   ignoring objective quality (score) to avoid bitrate/quality tradeoff.
         # - Otherwise, only compare objective quality (score), ignoring bitrate penalty entirely.
-        if db_cum_raw > hard_ratio:
-            # Penalize only the *incremental* excess to prevent early overshoot
-            # from causing a persistent negative reward across the whole GOP.
-            prev_excess = max(0.0, self._db_cum_prev - hard_ratio)
-            curr_excess = db_cum_raw - hard_ratio
-            delta_excess = max(0.0, curr_excess - prev_excess)
-            r = -over_penalty * delta_excess
+        if db_step_raw > hard_ratio:
+            excess = db_step_raw - hard_ratio
+            r = -over_penalty * excess
             apply_shaping = False
         else:
             r = dq_step
             apply_shaping = True
-        self._db_cum_prev = db_cum_raw
+        self._db_cum_prev = db_step_raw
 
         # Reward Shaping (Potential-based)
         if apply_shaping and self.cfg.shaping_w_score_ema != 0.0:

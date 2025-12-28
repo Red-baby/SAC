@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 
 @dataclass
 class Config:
@@ -24,6 +24,9 @@ class Config:
     q_val_min: float = 20.0  # q_val 的最小值
     q_val_max: float = 160.0  # q_val 的最大值
     delta_qp_max: int = 20
+    action_space_type: str = "discrete"  # "continuous" or "discrete"
+    num_discrete_actions: int = 0  # 0 => auto (2*delta_qp_max+1)
+    discrete_action_values: Optional[List[float]] = None
 
     # Preproc (feature)
     apply_log_comp: bool = True
@@ -40,6 +43,7 @@ class Config:
     lr_critic: float = 3e-4
     lr_alpha: float = 3e-4
     target_entropy: float = 0.0  # use default -1 if 0
+    num_action_samples: int = 8  # samples for discrete policy update
     init_alpha: float = 0.1
     tau: float = 0.005
     gamma: float = 0.99
@@ -81,3 +85,22 @@ class Config:
     use_tensorboard: bool = True
     tensorboard_dir: str = "./runs"
     tb_log_interval: int = 1  # 每 N 个训练步记录一次
+
+
+    def __post_init__(self) -> None:
+        if self.action_space_type != "discrete":
+            return
+        if self.num_discrete_actions <= 0:
+            self.num_discrete_actions = max(1, int(self.delta_qp_max) * 2 + 1)
+        if self.discrete_action_values is None:
+            if self.num_discrete_actions <= 1:
+                self.discrete_action_values = [0.0]
+            elif self.num_discrete_actions == int(self.delta_qp_max) * 2 + 1:
+                self.discrete_action_values = [
+                    float(v) for v in range(-int(self.delta_qp_max), int(self.delta_qp_max) + 1)
+                ]
+            else:
+                step = (2 * float(self.delta_qp_max)) / float(self.num_discrete_actions - 1)
+                self.discrete_action_values = [
+                    -float(self.delta_qp_max) + i * step for i in range(self.num_discrete_actions)
+                ]

@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class TemporalEncoder(nn.Module):
-    def __init__(self, in_channels=6, T=16, hidden=128):  # 更新为 6 通道（包含 q_val）
+    def __init__(self, in_channels=6, T=16, hidden=128):  # 更新为 6 通道（包含 qp）
         super().__init__()
         self.conv1 = nn.Conv1d(in_channels, 64, 3, padding=1)
         self.conv2 = nn.Conv1d(64, 128, 3, padding=1)
@@ -42,33 +42,36 @@ class FeatureEncoder(nn.Module):
         return self.out_ln(h)
 
 class Actor(nn.Module):
-    def __init__(self, state_scalar_dim, in_channels=6, seq_T=16, hidden=512):  # 更新为 6 通道
+    def __init__(self, state_scalar_dim, in_channels=6, seq_T=16, hidden=512, num_discrete_actions=41):
         super().__init__()
         self.enc = FeatureEncoder(in_channels, seq_T, state_scalar_dim, hidden)
-        # 输出 5 个 delta（对应 5 个时域等级：1, 2, 3, 4, 6）
-        self.mu = nn.Linear(hidden, 5)
-        self.log_std = nn.Linear(hidden, 5)
-        self.LOG_STD_MIN, self.LOG_STD_MAX = -5.0, 2.0
+        self.action_dim = 5
+        self.num_discrete_actions = int(num_discrete_actions)
+        self.logits = nn.Linear(hidden, self.action_dim * self.num_discrete_actions)
 
     def forward(self, seq_bc_t, scalars):
         h = self.enc(seq_bc_t, scalars)
-        mu = self.mu(h)  # [B, 5]
-        log_std = self.log_std(h).clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)  # [B, 5]
-        return mu, log_std
+        logits = self.logits(h).view(-1, self.action_dim, self.num_discrete_actions)
+        return logits
 
 class Critic(nn.Module):
-    def __init__(self, state_scalar_dim, in_channels=6, seq_T=16, hidden=512):  # 更新为 6 通道
+    def __init__(self, state_scalar_dim, in_channels=6, seq_T=16, hidden=512, num_discrete_actions=41, action_embed_dim=64):
         super().__init__()
-        # action 维度现在是 5（对应 5 个时域等级），所以 scalar_dim + 5
-        self.enc1 = FeatureEncoder(in_channels, seq_T, state_scalar_dim+5, hidden)
-        self.enc2 = FeatureEncoder(in_channels, seq_T, state_scalar_dim+5, hidden)
+        self.action_dim = 5
+        self.num_discrete_actions = int(num_discrete_actions)
+        self.action_embed = nn.Embedding(self.action_dim * self.num_discrete_actions, action_embed_dim)
+        self.enc1 = FeatureEncoder(in_channels, seq_T, state_scalar_dim + action_embed_dim, hidden)
+        self.enc2 = FeatureEncoder(in_channels, seq_T, state_scalar_dim + action_embed_dim, hidden)
         self.q1 = nn.Linear(hidden, 1)
         self.q2 = nn.Linear(hidden, 1)
 
-    def forward(self, seq_bc_t, scalars, a):
-        # a: [B, 5], scalars: [B, state_scalar_dim]
-        s1 = torch.cat([scalars, a], dim=-1)  # [B, state_scalar_dim + 5]
-        s2 = torch.cat([scalars, a], dim=-1)
-        h1 = self.enc1(seq_bc_t, s1)
-        h2 = self.enc2(seq_bc_t, s2)
+    def forward(self, seq_bc_t, scalars, a_indices):
+        offsets = torch.arange(self.action_dim, device=a_indices.device).unsqueeze(0) * self.num_discrete_actions
+        global_idx = (offsets + a_indices.long()).clamp(min=0, max=self.action_dim * self.num_discrete_actions - 1)
+        action_embeds = self.action_embed(global_idx)
+        action_embed = action_embeds.mean(dim=1)
+        s = torch.cat([scalars, action_embed], dim=-1)
+        h1 = self.enc1(seq_bc_t, s)
+        h2 = self.enc2(seq_bc_t, s)
         return self.q1(h1), self.q2(h2)
+

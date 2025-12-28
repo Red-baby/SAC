@@ -2,9 +2,9 @@
 """
 MiniGOP I/O runner:
 - Watch rl_dir for mg????_rq.json / mg????_fb.json (encoder handshake via rl_sync.*)
-- Build a [C=6, T] feature block via state.build_state_from_rq (channels: poise, comp, rdcost, score_target, bit_target, q_val/256)
-- Actor outputs 5 deltas (对应 5 个时域等级：1, 2, 3, 4, 6). 根据每帧的 temporal_level 映射对应的 delta 到该帧，然后应用到 q_val
-- Write mg????_qp.json with {"q_vals": [...]}
+- Build a [C=6, T] feature block via state.build_state_from_rq (channels: poise, comp, rdcost, score_target, bit_target, qp/256)
+- Actor outputs 5 deltas (对应 5 个时域等级：1, 2, 3, 4, 6). 根据每帧的 temporal_level 映射对应的 delta 到该帧，然后应用到 qp
+- Write mg????_qp.json with {"qps": [...]}
 - Reward: per-MG via reward.RewardComputer.step; episode ends when fb.gop_end == 1
 
 【重要时序逻辑】Replay buffer push 时机：
@@ -291,15 +291,15 @@ class RLRunner:
                     score_ema=self.rw.score_ema.get(),
                     last_delta=getattr(self, "_last_delta", 0.0),
                 )
-                seq, scalars, q_vals, temporal_level, mg_id, mg_size, bits_alloc, score_alloc = build_state_from_rq(
+                seq, scalars, qps, temporal_level, mg_id, mg_size, bits_alloc, score_alloc = build_state_from_rq(
                     self.cfg, rq, g_state
                 )
                 if self.agent is None:
                     self._ensure_models(seq.shape, scalars.shape[0])
 
                 self._mg_seen = max(self._mg_seen, mg_id + 1)
-                avg_q_val = float(np.mean(q_vals)) if len(q_vals) > 0 else 0.0
-                self._log(2, f"[MG][RQ] ① 接收请求 -> {rq_path} | id={mg_id} size={mg_size} avg_q_val={avg_q_val:.2f}")
+                avg_qp = float(np.mean(qps)) if len(qps) > 0 else 0.0
+                self._log(2, f"[MG][RQ] ① 接收请求 -> {rq_path} | id={mg_id} size={mg_size} avg_qp={avg_qp:.2f}")
                 
                 # 【关键修改】如果上一个 MG 已经收到 FB（有 reward 字段），用当前 state 作为其 s'，并 push
                 if self._last_mg_id is not None and self._last_mg_id in self.pending:
@@ -323,60 +323,68 @@ class RLRunner:
                 # Action
                 seq1 = torch.from_numpy(seq).unsqueeze(0).to(self.cfg.device).float()
                 sca1 = torch.from_numpy(scalars).unsqueeze(0).to(self.cfg.device).float()
+                num_actions = int(getattr(self.agent, 'num_discrete_actions', 0) or 0)
+                discrete_values = getattr(self.agent, 'discrete_action_values', None)
+                if discrete_values is None:
+                    if num_actions <= 0:
+                        num_actions = max(1, int(self.cfg.delta_qp_max) * 2 + 1)
+                    discrete_values = np.linspace(-self.cfg.delta_qp_max, self.cfg.delta_qp_max, num_actions, dtype=np.float32)
+                else:
+                    discrete_values = discrete_values.detach().cpu().numpy().astype(np.float32)
                 
-                # 时域等级到索引的映射：1->0, 2->1, 3->2, 4->3, 6->4
+                # Temporal level to index map: 1->0, 2->1, 3->2, 4->3, 6->4
                 def level_to_idx(level):
                     level_map = {1: 0, 2: 1, 3: 2, 4: 3, 6: 4}
-                    return level_map.get(int(level), 4)  # 默认映射到 6（索引4）
+                    return level_map.get(int(level), 4)
                 
-                # 推理模式：始终使用确定性策略，不探索
-                # 训练模式：前 start_steps 步随机探索，之后使用随机策略
+                # Inference mode: deterministic policy (no exploration)
+                # Train mode: random explore before start_steps, then policy
                 if self.cfg.mode == "infer":
-                    # 推理模式：确定性策略，不探索
-                    a_t, _ = self.agent.act(seq1, sca1, deterministic=True)
-                    a_norm = a_t.squeeze(0).detach().cpu().numpy().astype(np.float32)
+                    with torch.no_grad():
+                        a_idx_t, _ = self.agent.act(seq1, sca1, deterministic=True)
+                    a_idx = a_idx_t.squeeze(0).detach().cpu().numpy().astype(np.int32)
                     act_src = "policy_det"
                 elif self.total_steps < self.cfg.start_steps:
-                    # 训练模式 - 探索阶段：随机 delta
-                    a_norm = np.random.uniform(-1, 1, size=(5,)).astype(np.float32)
+                    a_idx = np.random.randint(0, num_actions, size=(5,), dtype=np.int32)
                     act_src = "explore"
                 else:
-                    # 训练模式 - 策略阶段：使用随机策略（保留探索噪声）
-                    a_t, _ = self.agent.act(seq1, sca1, deterministic=False)
-                    a_norm = a_t.squeeze(0).detach().cpu().numpy().astype(np.float32)
+                    with torch.no_grad():
+                        a_idx_t, _ = self.agent.act(seq1, sca1, deterministic=False)
+                    a_idx = a_idx_t.squeeze(0).detach().cpu().numpy().astype(np.int32)
                     act_src = "policy"
-                    
-                # 根据每帧的 temporal_level，将对应的 delta 应用到该帧
-                # temporal_level 长度是 mg_size
+                
+                # Apply delta per frame based on temporal_level
+                # temporal_level length equals mg_size
                 delta_qps = np.zeros(mg_size, dtype=np.float32)
                 for i in range(mg_size):
                     level_idx = level_to_idx(temporal_level[i])
-                    delta_norm = a_norm[level_idx]
-                    delta_qps[i] = delta_norm * self.cfg.delta_qp_max
+                    action_idx = int(a_idx[level_idx])
+                    delta_qps[i] = float(discrete_values[action_idx])
                 
-                # 为每一帧生成新的 q_val：q_val_new = clip(q_val_old + delta_qp, q_val_min, q_val_max)
-                # q_vals 长度已经是 mg_size
-                q_vals_new = np.clip(q_vals[:mg_size] + delta_qps, self.cfg.q_val_min, self.cfg.q_val_max).astype(np.float32)
+                # New qp per frame: qp_new = clip(qp_old + delta_qp, qp_min, qp_max)
+                # qps length equals mg_size
+                qps_new = np.clip(qps[:mg_size] + delta_qps, self.cfg.qp_min, self.cfg.qp_max)
+                qps_new = np.rint(qps_new).astype(np.int32)
                 if bool(getattr(self.cfg, "log_delta_qvals", False)):
-                    delta_list = [float(f"{d:+.2f}") for d in delta_qps.tolist()]
+                    delta_list = [float(d) for d in delta_qps.tolist()]
                     level_list = temporal_level[:mg_size].tolist()
-                    delta_by_level = {level: float(f"{a_norm[level_to_idx(level)] * self.cfg.delta_qp_max:+.2f}") for level in [1, 2, 3, 4, 6]}
-                    self._log(2, f"[MG][DELTA_QVAL] id={mg_id} temporal_level={level_list} delta_qps={delta_list} delta_by_level={delta_by_level}")
+                    delta_by_level = {level: float(discrete_values[a_idx[level_to_idx(level)]]) for level in [1, 2, 3, 4, 6]}
+                    self._log(2, f"[MG][DELTA_QP] id={mg_id} temporal_level={level_list} delta_qps={delta_list} delta_by_level={delta_by_level}")
                 
-                # 计算平均 q_val 和平均 delta 用于日志
-                avg_q_val_new = float(np.mean(q_vals_new))
-                avg_q_val_old = float(np.mean(q_vals[:mg_size]))
+                # Log average qp and delta
+                avg_qp_new = float(np.mean(qps_new))
+                avg_qp_old = float(np.mean(qps[:mg_size]))
                 avg_delta_qp = float(np.mean(delta_qps))
-                # 详细打印编码器端和 RL 侧的 q_val 序列（仅在 log_level>=3 时输出）
-                self._log(3, f"[MG][QVAL] enc_q_vals(id={mg_id}): {q_vals[:mg_size].tolist()}")
-                self._log(3, f"[MG][QVAL] rl_q_vals(id={mg_id}):  {q_vals_new.tolist()}")
-                self._log(2, f"[MG][ACT] ② 决策动作 -> id={mg_id} src={act_src} avg_delta_qp={avg_delta_qp:+.2f} avg_q_val={avg_q_val_old:.2f}->{avg_q_val_new:.2f}")
+                # Log encoder/RL qp sequences when log_level>=3
+                self._log(3, f"[MG][QPS] enc_qps(id={mg_id}): {qps[:mg_size].tolist()}")
+                self._log(3, f"[MG][QPS] rl_qps(id={mg_id}):  {qps_new.tolist()}")
+                self._log(2, f"[MG][ACT] action -> id={mg_id} src={act_src} avg_delta_qp={avg_delta_qp:+.2f} avg_qp={avg_qp_old:.2f}->{avg_qp_new:.2f}")
 
-                # Write QP json for this mg (新格式：q_vals 数组)
+                # Write QP json for this mg (新格式：qps 数组)
                 qp_path = rq_path.replace("_rq.json", "_qp.json")
-                q_vals_list = [float(q) for q in q_vals_new]
-                safe_write_json_atomic(qp_path, {"q_vals": q_vals_list})
-                self._log(3, f"[MG][QP] ③ 写入决策 -> {qp_path} (q_vals={len(q_vals_list)} frames)")
+                qps_list = [int(q) for q in qps_new.tolist()]
+                safe_write_json_atomic(qp_path, {"qps": qps_list})
+                self._log(3, f"[MG][QP] ③ 写入决策 -> {qp_path} (qps={len(qps_list)} frames)")
 
                 # 【新逻辑】暂存当前 MG 的 state 和 action，等待 FB 补齐 reward
                 if mg_id in self.pending:
@@ -385,10 +393,11 @@ class RLRunner:
                 self.pending[mg_id] = dict(
                     seq=seq,
                     scalars=scalars,
-                    a=a_norm.copy(),  # [5] 维的 action（对应 5 个时域等级）
+                    a=a_idx.copy(),  # [5] 维的 action（对应 5 个时域等级）
                     delta_qp=avg_delta_qp,  # 用于 reward 计算（保持标量）
                     bits_alloc=bits_alloc,
                     score_alloc=score_alloc,
+                    mg_size=mg_size,
                     # reward 和 done 将在 FB 到来时填充
                 )
                 self._last_mg_id = mg_id
@@ -459,7 +468,7 @@ class RLRunner:
                 score = float(fb.get("score", 0.0))
                 bits_alloc = float(pend.get("bits_alloc", 0.0))
                 score_alloc = float(pend.get("score_alloc", 0.0))
-                num_frames = 0  # 该 mini-GOP 的帧数
+                num_frames = int(fb.get("num_frames", fb.get("n_frames", pend.get("mg_size", 0))))  # 该 mini-GOP 的帧数
                 if self.baseline is not None:
                     last_poc = fb.get("last_poc", None)
                     if last_poc is not None:
@@ -476,6 +485,8 @@ class RLRunner:
                         self._baseline_warn_count += 1
                         if self._baseline_warn_count <= 3 or (self._baseline_warn_count % 10) == 0:
                             print("[Baseline][WARN] fb missing last_poc; fallback to rq alloc values.")
+                if num_frames <= 0:
+                    num_frames = int(pend.get("mg_size", 0))
                 gop_end = int(fb.get("gop_end", 0)) == 1
 
                 # Reward step
