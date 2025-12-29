@@ -339,11 +339,21 @@ class RLRunner:
                 
                 # Inference mode: deterministic policy (no exploration)
                 # Train mode: random explore before start_steps, then policy
+                baseline_prob = float(getattr(self.cfg, "baseline_action_prob", 0.0))
+                if baseline_prob < 0.0:
+                    baseline_prob = 0.0
+                if baseline_prob > 1.0:
+                    baseline_prob = 1.0
+                use_baseline = (self.cfg.mode == "train" and baseline_prob > 0.0 and np.random.rand() < baseline_prob)
                 if self.cfg.mode == "infer":
                     with torch.no_grad():
                         a_idx_t, _ = self.agent.act(seq1, sca1, deterministic=True)
                     a_idx = a_idx_t.squeeze(0).detach().cpu().numpy().astype(np.int32)
                     act_src = "policy_det"
+                elif use_baseline:
+                    zero_idx = int(np.argmin(np.abs(discrete_values)))
+                    a_idx = np.full((5,), zero_idx, dtype=np.int32)
+                    act_src = "baseline"
                 elif self.total_steps < self.cfg.start_steps:
                     a_idx = np.random.randint(0, num_actions, size=(5,), dtype=np.int32)
                     act_src = "explore"
