@@ -23,7 +23,7 @@ from collections import defaultdict
 from typing import Optional, Dict, List, Tuple
 from config import Config
 from utils import safe_read_json, safe_write_json_atomic, now_ms
-from sac_agent import SACAgent
+from sac_agent import D3QNAgent
 from replay import ReplayBuffer
 from state import build_state_from_rq
 from reward import RewardComputer, RewardCfg
@@ -119,7 +119,7 @@ class RLRunner:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         # Probe state dims from a dummy rq if exists later
-        self.agent: Optional[SACAgent] = None
+        self.agent: Optional[D3QNAgent] = None
         self.buf: Optional[ReplayBuffer] = None
         self.current_epoch: int = 1
         self.current_fps: float = cfg.fps  # 当前视频的 fps，支持多视频不同 fps
@@ -220,7 +220,7 @@ class RLRunner:
         if self.agent is not None:
             return
         C, T = seq_shape
-        self.agent = SACAgent(self.cfg, state_scalar_dim=scalar_dim, seq_T=T, seq_C=C)
+        self.agent = D3QNAgent(self.cfg, state_scalar_dim=scalar_dim, seq_T=T, seq_C=C)
         self.buf = ReplayBuffer(self.cfg.replay_size, (C, T), scalar_dim)
         self._log(1, f"[RL] Models ready. State(seq)={C}x{T}, scalars={scalar_dim}")
         
@@ -289,7 +289,7 @@ class RLRunner:
                 # Build state
                 g_state = dict(
                     score_ema=self.rw.score_ema.get(),
-                    last_delta=getattr(self, "_last_delta", 0.0),
+                    last_action=getattr(self, "_last_action", self.cfg.action_min),
                 )
                 seq, scalars, qps, temporal_level, mg_id, mg_size, bits_alloc, score_alloc = build_state_from_rq(
                     self.cfg, rq, g_state
@@ -323,73 +323,58 @@ class RLRunner:
                 # Action
                 seq1 = torch.from_numpy(seq).unsqueeze(0).to(self.cfg.device).float()
                 sca1 = torch.from_numpy(scalars).unsqueeze(0).to(self.cfg.device).float()
-                num_actions = int(getattr(self.agent, 'num_discrete_actions', 0) or 0)
-                discrete_values = getattr(self.agent, 'discrete_action_values', None)
+                num_actions = int(getattr(self.agent, "num_discrete_actions", 0) or 0)
+                discrete_values = getattr(self.agent, "discrete_action_values", None)
+                action_min = float(getattr(self.cfg, "action_min", self.cfg.qp_min))
+                action_max = float(getattr(self.cfg, "action_max", self.cfg.qp_max))
                 if discrete_values is None:
+                    action_step = max(1, int(getattr(self.cfg, "action_step", 1)))
                     if num_actions <= 0:
-                        num_actions = max(1, int(self.cfg.delta_qp_max) * 2 + 1)
-                    discrete_values = np.linspace(-self.cfg.delta_qp_max, self.cfg.delta_qp_max, num_actions, dtype=np.float32)
+                        values = list(range(int(action_min), int(action_max) + 1, action_step))
+                        if not values:
+                            values = [action_min]
+                        discrete_values = np.array(values, dtype=np.float32)
+                        num_actions = int(len(discrete_values))
+                    elif num_actions <= 1:
+                        discrete_values = np.array([action_min], dtype=np.float32)
+                    else:
+                        step_f = (action_max - action_min) / float(num_actions - 1)
+                        discrete_values = np.array([action_min + i * step_f for i in range(num_actions)], dtype=np.float32)
                 else:
                     discrete_values = discrete_values.detach().cpu().numpy().astype(np.float32)
-                
-                # Temporal level to index map: 1->0, 2->1, 3->2, 4->3, 6->4
-                def level_to_idx(level):
-                    level_map = {1: 0, 2: 1, 3: 2, 4: 3, 6: 4}
-                    return level_map.get(int(level), 4)
-                
+                    if num_actions <= 0:
+                        num_actions = int(len(discrete_values))
+
                 # Inference mode: deterministic policy (no exploration)
                 # Train mode: random explore before start_steps, then policy
-                baseline_prob = float(getattr(self.cfg, "baseline_action_prob", 0.0))
-                if baseline_prob < 0.0:
-                    baseline_prob = 0.0
-                if baseline_prob > 1.0:
-                    baseline_prob = 1.0
-                use_baseline = (self.cfg.mode == "train" and baseline_prob > 0.0 and np.random.rand() < baseline_prob)
                 if self.cfg.mode == "infer":
                     with torch.no_grad():
                         a_idx_t, _ = self.agent.act(seq1, sca1, deterministic=True)
                     a_idx = a_idx_t.squeeze(0).detach().cpu().numpy().astype(np.int32)
                     act_src = "policy_det"
-                elif use_baseline:
-                    zero_idx = int(np.argmin(np.abs(discrete_values)))
-                    a_idx = np.full((5,), zero_idx, dtype=np.int32)
-                    act_src = "baseline"
                 elif self.total_steps < self.cfg.start_steps:
-                    a_idx = np.random.randint(0, num_actions, size=(5,), dtype=np.int32)
+                    a_idx = np.random.randint(0, num_actions, size=(1,), dtype=np.int32)
                     act_src = "explore"
                 else:
                     with torch.no_grad():
                         a_idx_t, _ = self.agent.act(seq1, sca1, deterministic=False)
                     a_idx = a_idx_t.squeeze(0).detach().cpu().numpy().astype(np.int32)
                     act_src = "policy"
-                
-                # Apply delta per frame based on temporal_level
-                # temporal_level length equals mg_size
-                delta_qps = np.zeros(mg_size, dtype=np.float32)
-                for i in range(mg_size):
-                    level_idx = level_to_idx(temporal_level[i])
-                    action_idx = int(a_idx[level_idx])
-                    delta_qps[i] = float(discrete_values[action_idx])
-                
-                # New qp per frame: qp_new = clip(qp_old + delta_qp, qp_min, qp_max)
-                # qps length equals mg_size
-                qps_new = np.clip(qps[:mg_size] + delta_qps, self.cfg.qp_min, self.cfg.qp_max)
+
+                action_qp = float(discrete_values[int(a_idx[0])])
+                qps_new = np.full(mg_size, action_qp, dtype=np.float32)
+                qps_new = np.clip(qps_new, action_min, action_max)
                 qps_new = np.rint(qps_new).astype(np.int32)
-                if bool(getattr(self.cfg, "log_delta_qvals", False)):
-                    delta_list = [float(d) for d in delta_qps.tolist()]
-                    level_list = temporal_level[:mg_size].tolist()
-                    delta_by_level = {level: float(discrete_values[a_idx[level_to_idx(level)]]) for level in [1, 2, 3, 4, 6]}
-                    self._log(2, f"[MG][DELTA_QP] id={mg_id} temporal_level={level_list} delta_qps={delta_list} delta_by_level={delta_by_level}")
-                
-                # Log average qp and delta
+                if bool(getattr(self.cfg, "log_action_qp", False)):
+                    self._log(2, f"[MG][ACT_QP] id={mg_id} action_qp={action_qp:.2f}")
+
+                # Log average qp
                 avg_qp_new = float(np.mean(qps_new))
                 avg_qp_old = float(np.mean(qps[:mg_size]))
-                avg_delta_qp = float(np.mean(delta_qps))
                 # Log encoder/RL qp sequences when log_level>=3
                 self._log(3, f"[MG][QPS] enc_qps(id={mg_id}): {qps[:mg_size].tolist()}")
                 self._log(3, f"[MG][QPS] rl_qps(id={mg_id}):  {qps_new.tolist()}")
-                self._log(2, f"[MG][ACT] action -> id={mg_id} src={act_src} avg_delta_qp={avg_delta_qp:+.2f} avg_qp={avg_qp_old:.2f}->{avg_qp_new:.2f}")
-
+                self._log(2, f"[MG][ACT] action -> id={mg_id} src={act_src} action_qp={action_qp:.2f} avg_qp={avg_qp_old:.2f}->{avg_qp_new:.2f}")
                 # Write QP json for this mg (新格式：qps 数组)
                 qp_path = rq_path.replace("_rq.json", "_qp.json")
                 qps_list = [int(q) for q in qps_new.tolist()]
@@ -403,8 +388,8 @@ class RLRunner:
                 self.pending[mg_id] = dict(
                     seq=seq,
                     scalars=scalars,
-                    a=a_idx.copy(),  # [5] 维的 action（对应 5 个时域等级）
-                    delta_qp=avg_delta_qp,  # 用于 reward 计算（保持标量）
+                    a=a_idx.copy(),  # [1] action index
+                    action_qp=action_qp,  # chosen QP
                     bits_alloc=bits_alloc,
                     score_alloc=score_alloc,
                     mg_size=mg_size,
@@ -500,7 +485,7 @@ class RLRunner:
                 gop_end = int(fb.get("gop_end", 0)) == 1
 
                 # Reward step
-                r = self.rw.step(bits=bits, score=score, bits_alloc=bits_alloc, score_alloc=score_alloc, delta_qp=pend["delta_qp"], num_frames=num_frames)
+                r = self.rw.step(bits=bits, score=score, bits_alloc=bits_alloc, score_alloc=score_alloc, delta_qp=pend["action_qp"], num_frames=num_frames)
                 
                 info = None
                 if gop_end:
@@ -540,20 +525,19 @@ class RLRunner:
                 if self.cfg.mode == "train" and self.total_steps >= self.cfg.start_steps and len(self.buf) >= self.cfg.batch_size:
                     for _ in range(self.cfg.updates_per_step):
                         b = self.buf.sample(self.cfg.batch_size, self.cfg.device)
-                        loss_q, loss_actor, alpha = self.agent.train_step(b)
+                        loss_q, eps = self.agent.train_step(b)
                         self.epoch_train_count += 1
                         
                         # TensorBoard 记录
                         if self.writer and (self.total_steps % self.cfg.tb_log_interval) == 0:
-                            self.writer.add_scalar('Loss/Critic', loss_q, self.total_steps)
-                            self.writer.add_scalar('Loss/Actor', loss_actor, self.total_steps)
-                            self.writer.add_scalar('SAC/Alpha', alpha, self.total_steps)
-                            self.writer.add_scalar('SAC/Lambda', self.rw.lam, self.total_steps)
+                            self.writer.add_scalar('Loss/Q', loss_q, self.total_steps)
+                            self.writer.add_scalar('D3QN/Epsilon', eps, self.total_steps)
+                            self.writer.add_scalar('RL/Lambda', self.rw.lam, self.total_steps)
                         
                         if (self.total_steps % 50) == 0:
-                            self._log(2, f"[Train] step={self.total_steps} Lq={loss_q:.4f} La={loss_actor:.4f} alpha={alpha:.4f}")
+                            self._log(2, f"[Train] step={self.total_steps} Lq={loss_q:.4f} eps={eps:.4f}")
 
-                self._last_delta = float(pend["delta_qp"])
+                self._last_action = float(pend["action_qp"])
 
                 # Episode end?
                 if gop_end and info is not None:
@@ -774,8 +758,7 @@ class RLRunner:
         self._log(1, f"  当前 Score EMA:        {self.rw.score_ema.get():.3f}")
         
         if self.agent:
-            alpha_val = self.agent.log_alpha.exp().item()
-            self._log(1, f"  当前 SAC Alpha:        {alpha_val:.4f}")
+            self._log(1, f"  当前 D3QN Epsilon:     {self.agent.last_epsilon:.4f}")
         
         self._log(1, f"{'#'*80}\n")
         

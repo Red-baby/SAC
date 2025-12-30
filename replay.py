@@ -8,8 +8,8 @@ class ReplayBuffer:
         C, T = state_seq_shape
         self._seq = np.zeros((capacity, C, T), dtype=np.float32)
         self._sca = np.zeros((capacity, state_scalar_dim), dtype=np.float32)
-        # action 维度改为 5（对应 5 个时域等级：1, 2, 3, 4, 6）
-        self._a   = np.zeros((capacity, 5), dtype=np.int32)
+        # action dim = 1 (single QP)
+        self._a   = np.zeros((capacity, 1), dtype=np.int32)
         self._r   = np.zeros((capacity, 1), dtype=np.float32)
         self._seq2= np.zeros((capacity, C, T), dtype=np.float32)
         self._sca2= np.zeros((capacity, state_scalar_dim), dtype=np.float32)
@@ -21,7 +21,7 @@ class ReplayBuffer:
     def push(self, seq, sca, a, r, seq2, sca2, done):
         i = self._p
         self._seq[i]  = seq;    self._sca[i]  = sca
-        self._a[i]    = a;      self._r[i]    = float(r)
+        self._a[i]    = a
         self._seq2[i] = seq2;   self._sca2[i] = sca2
         self._d[i]    = float(done)
         self._p = (self._p + 1) % self.capacity

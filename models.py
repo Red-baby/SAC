@@ -75,3 +75,19 @@ class Critic(nn.Module):
         h2 = self.enc2(seq_bc_t, s)
         return self.q1(h1), self.q2(h2)
 
+class DuelingQNet(nn.Module):
+    def __init__(self, state_scalar_dim, in_channels=6, seq_T=16, hidden=512, num_discrete_actions=41, action_dim=5):
+        super().__init__()
+        self.action_dim = int(action_dim)
+        self.num_discrete_actions = int(num_discrete_actions)
+        self.enc = FeatureEncoder(in_channels, seq_T, state_scalar_dim, hidden)
+        self.value = nn.Linear(hidden, self.action_dim)
+        self.adv = nn.Linear(hidden, self.action_dim * self.num_discrete_actions)
+
+    def forward(self, seq_bc_t, scalars):
+        h = self.enc(seq_bc_t, scalars)
+        v = self.value(h).view(-1, self.action_dim, 1)
+        a = self.adv(h).view(-1, self.action_dim, self.num_discrete_actions)
+        q = v + (a - a.mean(dim=-1, keepdim=True))
+        return q
+

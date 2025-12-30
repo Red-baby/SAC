@@ -29,8 +29,6 @@ def parse_args():
                     help="加载检查点路径（完整模型状态）")
     ap.add_argument("--save-replay-buffer", action="store_true", default=Config.save_replay_buffer,
                     help="是否保存 replay buffer")
-    ap.add_argument("--baseline-action-prob", type=float, default=Config.baseline_action_prob,
-                    help="训练时以概率 p 使用零动作(所有 delta_qp=0)")
     
     # 日志参数
     ap.add_argument("--log-level", type=int, default=Config.log_level,
@@ -218,7 +216,6 @@ def main():
         ckpt_interval=args.ckpt_interval,
         load_checkpoint=args.load_checkpoint,
         save_replay_buffer=args.save_replay_buffer,
-        baseline_action_prob=args.baseline_action_prob,
         log_level=args.log_level,
         use_tensorboard=not args.no_tensorboard,
     )

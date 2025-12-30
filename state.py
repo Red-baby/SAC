@@ -9,7 +9,7 @@ def build_state_from_rq(cfg, rq: dict, g_state: dict) -> Tuple[np.ndarray, np.nd
       seq: [C=6, T] with order [poise, comp, rdcost, score_target, bit_target, qp/256]
       scalars: [9]  = [d_score_alloc, d_score_ratio, d_score_gop_alloc,
                         d_bits_ratio,  i_bits_alloc,  i_bits_gop_alloc,
-                        mg_pos_abs, score_ema/100, last_delta/delta_qp_max]
+                        mg_pos_abs, score_ema/100, last_action/(action_max-action_min)]
       qps: [mg_size] 当前 minigop 内每一帧的 qp（原始值，未归一化）
       temporal_level: [mg_size] 当前 minigop 内每一帧的时域等级 [1,2,3,4,6]
       mg_id, mg_size, bits_alloc(gop), score_alloc(gop)
@@ -58,12 +58,17 @@ def build_state_from_rq(cfg, rq: dict, g_state: dict) -> Tuple[np.ndarray, np.nd
     i_bits_gop_alloc = float(rq.get("bits_gop_alloc", rq.get("i_bits_gop_alloc", i_bits_alloc)))
 
     mg_pos_abs = float(max(0, mg_id))
+    action_min = float(getattr(cfg, "action_min", 0.0))
+    action_max = float(getattr(cfg, "action_max", action_min + 1.0))
+    action_range = max(1.0, action_max - action_min)
+    last_action = float(g_state.get("last_action", action_min))
+    last_action_norm = (last_action - action_min) / action_range
 
     # scalars 不再包含 qp（已作为序列特征），保持 9 维
     scalars = np.array([
         d_score_alloc, d_score_ratio, d_score_gop_alloc,
         d_bits_ratio,  i_bits_alloc,  i_bits_gop_alloc,
-        mg_pos_abs,    g_state.get("score_ema",0.0)/100.0, g_state.get("last_delta",0.0)/max(1.0, getattr(cfg, "delta_qp_max", 10))
+        mg_pos_abs,    g_state.get("score_ema",0.0)/100.0, last_action_norm
     ], dtype=np.float32)
     
     # 返回原始 qps（未归一化，长度为 mg_size，用于后续处理）

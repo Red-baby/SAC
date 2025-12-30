@@ -19,14 +19,15 @@ class Config:
 
     # MG / QP / Q_VAL
     frames_per_mg: int = 16
-    qp_min: int = 48  # 保留用于向后兼容
-    qp_max: int = 252  # 保留用于向后兼容
+    qp_min: int = 30
+    qp_max: int = 210
     q_val_min: float = 20.0  # q_val 的最小值
     q_val_max: float = 160.0  # q_val 的最大值
-    delta_qp_max: int = 20
-    delta_qp_step: int = 2  # step size for discrete delta_qp values
+    action_min: int = 30
+    action_max: int = 210
+    action_step: int = 1
     action_space_type: str = "discrete"  # "continuous" or "discrete"
-    num_discrete_actions: int = 0  # 0 => auto (by delta_qp_step)
+    num_discrete_actions: int = 0  # 0 => auto (by action_step)
     discrete_action_values: Optional[List[float]] = None
 
     # Preproc (feature)
@@ -37,17 +38,17 @@ class Config:
     robust_scale_seq: bool = True
     robust_clip: float = 5.0
 
-    # SAC v2
+    # D3QN
     device: str = "cuda"
     hidden_dim: int = 512
-    lr_actor: float = 3e-4
     lr_critic: float = 3e-4
-    lr_alpha: float = 3e-4
-    target_entropy: float = 3.0  # use default -1 if 0
-    num_action_samples: int = 8  # samples for discrete policy update
-    init_alpha: float = 0.1
-    tau: float = 0.005
     gamma: float = 0.99
+
+    # D3QN specific
+    dqn_target_update_interval: int = 200
+    dqn_eps_start: float = 1.0
+    dqn_eps_end: float = 0.05
+    dqn_eps_decay: float = 20000.0
 
     # Training
     batch_size: int = 128
@@ -56,7 +57,6 @@ class Config:
     updates_per_step: int = 4
     seed: int = 42
     baseline_stats_path: Optional[str] = None
-    baseline_action_prob: float = 0.1  # chance to use zero-delta action during training
 
     # Reward / constraint
     smooth_penalty: float = 0.02
@@ -81,7 +81,7 @@ class Config:
     # Logging
     log_level: int = 2  # 0=静默, 1=简洁, 2=详细, 3=调试
     log_interval_mg: int = 20
-    log_delta_qvals: bool = True  # print per-MG delta_qps list
+    log_action_qp: bool = True  # print per-MG action QP
 
     # TensorBoard
     use_tensorboard: bool = True
@@ -92,26 +92,26 @@ class Config:
     def __post_init__(self) -> None:
         if self.action_space_type != "discrete":
             return
-        step = max(1, int(getattr(self, "delta_qp_step", 1)))
+        step = max(1, int(getattr(self, "action_step", 1)))
+        action_min = int(getattr(self, "action_min", 0))
+        action_max = int(getattr(self, "action_max", action_min))
+        if action_max < action_min:
+            action_max = action_min
         if self.discrete_action_values is None:
             if self.num_discrete_actions <= 0:
-                values = list(range(-int(self.delta_qp_max), int(self.delta_qp_max) + 1, step))
+                values = list(range(action_min, action_max + 1, step))
                 if not values:
-                    values = [0]
+                    values = [action_min]
                 self.discrete_action_values = [float(v) for v in values]
                 self.num_discrete_actions = len(self.discrete_action_values)
             else:
                 if self.num_discrete_actions <= 1:
-                    self.discrete_action_values = [0.0]
-                elif self.num_discrete_actions == int(self.delta_qp_max) * 2 + 1 and step == 1:
-                    self.discrete_action_values = [
-                        float(v) for v in range(-int(self.delta_qp_max), int(self.delta_qp_max) + 1)
-                    ]
+                    self.discrete_action_values = [float(action_min)]
                 else:
-                    span = 2 * float(self.delta_qp_max)
+                    span = float(action_max - action_min)
                     step_f = span / float(self.num_discrete_actions - 1)
                     self.discrete_action_values = [
-                        -float(self.delta_qp_max) + i * step_f for i in range(self.num_discrete_actions)
+                        float(action_min) + i * step_f for i in range(self.num_discrete_actions)
                     ]
         else:
             self.num_discrete_actions = int(len(self.discrete_action_values))
