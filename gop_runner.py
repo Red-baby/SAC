@@ -53,16 +53,6 @@ class GOPRunner:
         # GOP 级别的 reward 计算器
         self.rw = GOPRewardComputer(
             RewardCfg(
-                gamma=cfg.gamma,
-                smooth_penalty=cfg.smooth_penalty,
-                lambda_init=cfg.lambda_init,
-                lambda_lr=cfg.lambda_lr,
-                bitrate_tolerance=cfg.bitrate_tolerance,
-                bitrate_hard_ratio=cfg.bitrate_hard_ratio,
-                over_bitrate_penalty=cfg.over_bitrate_penalty,
-                shaping_w_score_ema=cfg.shaping_w_score_ema,
-                term_bonus=cfg.term_bonus,
-                term_tau=cfg.term_tau,
                 bitrate_save_weight=getattr(cfg, 'bitrate_save_weight', 1.0),
                 quality_smooth_weight=getattr(cfg, 'quality_smooth_weight', 0.1),
             )

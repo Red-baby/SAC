@@ -2,7 +2,7 @@
 import os, argparse, threading
 from typing import List, Dict, Tuple
 from config import Config
-from io_runner import RLRunner
+from gop_runner import GOPRunner
 from encoder_proc import launch_encoder, start_monitor
 from dataset import add_dataset_args, build_cmds_from_dataset
 
@@ -15,8 +15,6 @@ def parse_args():
     ap.add_argument("--encoder", type=str, default=Config.encoder_path)
     ap.add_argument("--device", type=str, default=None,
                     help="PyTorch 设备，例如 cpu、cuda、cuda:0；默认自动检测")
-    ap.add_argument("--baseline-stats", type=str, default="/rl/new_2pass_basic.log",
-                    help="基线帧统计日志路径，用于比较 bits/score")
     ap.add_argument("--fps", type=float, default=None,
                     help="视频帧率（用于计算 kbps），如果未指定则从编码器命令中提取")
     
@@ -187,9 +185,6 @@ def main():
     else:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     rl_dir_abs = os.path.abspath(args.rl_dir)
-    baseline_path = args.baseline_stats
-    if baseline_path is not None:
-        baseline_path = os.path.abspath(baseline_path)
     
     # 提取 fps（如果用户指定了就使用，否则从第一个视频命令中提取）
     fps = args.fps
@@ -209,7 +204,6 @@ def main():
     cfg = Config(
         rl_dir=rl_dir_abs, 
         device=device, 
-        baseline_stats_path=baseline_path,
         fps=fps,
         mode=args.mode,  # "train" or "infer"
         ckpt_dir=args.ckpt_dir,
@@ -243,7 +237,7 @@ def main():
         print(f"[MAIN]   - 每 {cfg.ckpt_interval} 个 epoch 保存检查点")
     print(f"[MAIN] ========================================")
     
-    runner = RLRunner(cfg)
+    runner = GOPRunner(cfg)
     
     # 加载 checkpoint（如果指定）
     if cfg.load_checkpoint and os.path.exists(cfg.load_checkpoint):

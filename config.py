@@ -56,28 +56,19 @@ class Config:
     start_steps: int = 10
     updates_per_step: int = 4
     seed: int = 42
-    baseline_stats_path: Optional[str] = None
+    gamma: float = 0.99  # 折扣因子（D3QN 使用）
 
-    # Reward / constraint
-    smooth_penalty: float = 0.02
-    lambda_init: float = 5.0
-    lambda_lr: float = 1e-2
-    bitrate_tolerance: float = 0.10  # 允许码率在 +/-10% 波动区间内不计惩罚
-    bitrate_hard_ratio: float = 0.05  # hard cap: strictly penalize when > +5% over reference
-    over_bitrate_penalty: float = 50.0  # pure-bit penalty scale for excess over hard cap
-    term_bonus: float = 0.0
-    term_tau: float = 0.01
-    shaping_w_score_ema: float = 0
-
-    # GOP-level processing (新增)
+    # GOP-level processing
     gop_size_standard: int = 225      # 标准 GOP 大小
-    is_gop_level: bool = True         # 是否使用 GOP 级别处理
     default_qp: int = 127             # 默认 QP 值（用于第一个 GOP）
 
-    # Quality-based bitrate reduction (新增)
+    # GOP Reward 配置
     bitrate_save_weight: float = 1.0      # 质量达标时码率节省的奖励权重
     quality_smooth_weight: float = 0.1    # GOP 间质量平滑惩罚权重
-    seq_target_T: int = 64                # 序列下采样目标长度（225->64 加速 GRU）
+    
+    # 序列下采样配置
+    enable_smart_downsample: bool = True  # 是否开启智能下采样（保留 I/P 帧，池化 B 帧）
+    seq_target_T: int = 64                # 下采样目标长度（设为 225 则不下采样）
 
     # Checkpoint
     ckpt_dir: str = "./checkpoints"

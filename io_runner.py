@@ -36,76 +36,6 @@ except ImportError:
     SummaryWriter = None
 
 
-class BaselineStats:
-    def __init__(self, path: str):
-        self.path = path
-        self.frames: List[Dict] = []
-        self._poc_to_idx: Dict[int, int] = {}
-        self._load()
-
-    def _load(self) -> None:
-        with open(self.path, "r", encoding="utf-8") as fp:
-            for line in fp:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                frame = self._parse_line(line)
-                if frame is None:
-                    continue
-                idx = len(self.frames)
-                self.frames.append(frame)
-                self._poc_to_idx[frame["poc"]] = idx
-
-    @staticmethod
-    def _parse_line(line: str) -> Optional[Dict]:
-        parts = line.split()
-        if len(parts) < 3:
-            return None
-        try:
-            poc = int(parts[0])
-        except ValueError:
-            return None
-        frame_type = parts[2].upper()
-
-        def _find_float(key: str, default: float = 0.0) -> float:
-            if key not in parts:
-                return default
-            idx = parts.index(key)
-            if idx + 1 >= len(parts):
-                return default
-            try:
-                return float(parts[idx + 1])
-            except ValueError:
-                return default
-
-        score = _find_float("score", 0.0)
-        bits = _find_float("bits", 0.0)
-        return {"poc": poc, "type": frame_type, "score": score, "bits": bits}
-
-    def accumulate_minigop(self, last_poc: int) -> Tuple[float, float, int]:
-        """返回 (sum_bits, sum_score, num_frames)"""
-        if not self.frames:
-            raise RuntimeError("baseline stats is empty")
-        if last_poc not in self._poc_to_idx:
-            raise KeyError(f"baseline stats missing poc={last_poc}")
-        idx = self._poc_to_idx[last_poc]
-        sum_bits = 0.0
-        sum_score = 0.0
-        num_frames = 0
-        found_p = False
-        while idx >= 0:
-            frame = self.frames[idx]
-            sum_bits += float(frame["bits"])
-            sum_score += float(frame["score"])
-            num_frames += 1
-            if frame["type"] == "P":
-                found_p = True
-                break
-            idx -= 1
-        if not found_p:
-            raise RuntimeError(f"no P-frame found when accumulating for poc={last_poc}")
-        return sum_bits, sum_score, num_frames
-
 
 def _scan_mg_rq_files(rl_dir: str) -> List[str]:
     return sorted(glob.glob(os.path.join(rl_dir, "mg????_rq.json")))
@@ -144,17 +74,7 @@ class RLRunner:
         self._last_mg_id: Optional[int] = None
 
         self.total_steps = 0
-        self.baseline: Optional[BaselineStats] = None
-        self._baseline_warn_count = 0
         self._mg_seen = 0
-        baseline_path = getattr(cfg, "baseline_stats_path", None)
-        if baseline_path:
-            try:
-                self.baseline = BaselineStats(baseline_path)
-                self._log(1, f"[Baseline] loaded {len(self.baseline.frames)} frames from {baseline_path}")
-            except Exception as e:
-                self._log(1, f"[Baseline][WARN] failed to load '{baseline_path}': {e}")
-                self.baseline = None
         
         # Epoch 统计
         self.epoch_episodes = 0  # 当前 epoch 完成的 episode 数量

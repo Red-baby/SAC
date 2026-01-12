@@ -1,7 +1,119 @@
 # -*- coding: utf-8 -*-
 import numpy as np
-from typing import Tuple
+from typing import Tuple, List
 from utils import pad_or_trim, circular_pad, log_process
+
+
+def _smart_downsample(seq: np.ndarray, temporal: np.ndarray, target_T: int) -> np.ndarray:
+    """
+    智能下采样：保留 I/P 帧 (temporal_level <= 1)，对 B 帧区间使用平均池化
+    
+    策略：
+    1. 完整保留 temporal_level=0 (I帧) 和 temporal_level=1 (P帧)
+    2. 对连续的 B 帧区间 (temporal_level >= 2) 使用平均池化
+    3. 如果结果仍超过 target_T，对 B 帧区间进一步池化
+    
+    Args:
+        seq: [C, T] 序列特征
+        temporal: [T] 时域等级数组（未归一化）
+        target_T: 目标序列长度
+        
+    Returns:
+        downsampled: [C, T'] 下采样后的序列，T' <= target_T
+    """
+    C, T = seq.shape
+    if T <= target_T:
+        return seq
+    
+    # 找出所有关键帧（I/P 帧）的位置
+    key_frame_mask = temporal <= 1.0  # temporal_level 0 或 1
+    key_frame_indices = np.where(key_frame_mask)[0]
+    
+    # 如果关键帧数量已经超过目标，只保留关键帧并均匀采样
+    if len(key_frame_indices) >= target_T:
+        sample_indices = np.linspace(0, len(key_frame_indices) - 1, target_T, dtype=np.int32)
+        return seq[:, key_frame_indices[sample_indices]]
+    
+    # 构建结果列表
+    result_frames: List[np.ndarray] = []
+    result_count = 0
+    
+    # 计算剩余可用于 B 帧的位置数
+    remaining_slots = target_T - len(key_frame_indices)
+    
+    # 将序列分割成：关键帧 + B帧区间
+    i = 0
+    b_frame_segments: List[Tuple[int, int]] = []  # (start, end) 区间
+    
+    while i < T:
+        if key_frame_mask[i]:
+            # 关键帧：直接保留
+            result_frames.append(seq[:, i:i+1])
+            result_count += 1
+            i += 1
+        else:
+            # B 帧区间：找到连续的 B 帧
+            start = i
+            while i < T and not key_frame_mask[i]:
+                i += 1
+            end = i
+            b_frame_segments.append((start, end))
+    
+    # 对 B 帧区间进行池化
+    total_b_frames = sum(end - start for start, end in b_frame_segments)
+    
+    if total_b_frames > 0 and remaining_slots > 0:
+        # 计算每个 B 帧区间应该保留多少帧
+        pooled_b_frames: List[np.ndarray] = []
+        
+        for start, end in b_frame_segments:
+            segment_len = end - start
+            # 按比例分配 slots
+            segment_slots = max(1, int(remaining_slots * segment_len / total_b_frames))
+            
+            if segment_slots >= segment_len:
+                # 不需要池化，全部保留
+                pooled_b_frames.append(seq[:, start:end])
+            else:
+                # 需要池化：将区间划分成 segment_slots 份，每份取平均
+                pooled = np.zeros((C, segment_slots), dtype=np.float32)
+                indices = np.linspace(start, end, segment_slots + 1, dtype=np.int32)
+                for j in range(segment_slots):
+                    pooled[:, j] = np.mean(seq[:, indices[j]:indices[j+1]], axis=1)
+                pooled_b_frames.append(pooled)
+        
+        # 重新构建结果：按原始顺序交错排列关键帧和池化后的 B 帧
+        result_frames = []
+        b_seg_idx = 0
+        i = 0
+        while i < T:
+            if key_frame_mask[i]:
+                result_frames.append(seq[:, i:i+1])
+                i += 1
+            else:
+                # 添加池化后的 B 帧区间
+                if b_seg_idx < len(pooled_b_frames):
+                    result_frames.append(pooled_b_frames[b_seg_idx])
+                    b_seg_idx += 1
+                # 跳过原始的 B 帧区间
+                while i < T and not key_frame_mask[i]:
+                    i += 1
+    
+    # 合并所有帧
+    if len(result_frames) == 0:
+        # 极端情况：没有任何帧，返回均匀采样
+        indices = np.linspace(0, T - 1, target_T, dtype=np.int32)
+        return seq[:, indices]
+    
+    result = np.concatenate(result_frames, axis=1)
+    
+    # 如果结果仍然超过目标长度，进行最终的均匀截断
+    if result.shape[1] > target_T:
+        indices = np.linspace(0, result.shape[1] - 1, target_T, dtype=np.int32)
+        result = result[:, indices]
+    
+    return result
+
 
 def build_state_from_gop_rq(cfg, rq: dict, g_state: dict) -> Tuple[np.ndarray, np.ndarray, int, int, float, float]:
     """
@@ -98,13 +210,14 @@ def build_state_from_gop_rq(cfg, rq: dict, g_state: dict) -> Tuple[np.ndarray, n
         temporal_norm     # 时域等级（归一化）
     ], axis=0).astype(np.float32)
     
-    # === 序列下采样 ===
-    # 将 T=225 下采样到 T=64，加速 GRU 处理
+    # === 智能序列下采样 ===
+    # 保留 I/P 帧 (temporal_level <= 1)，对 B 帧区间使用平均池化
+    enable_downsample = bool(getattr(cfg, "enable_smart_downsample", True))
     target_T = int(getattr(cfg, "seq_target_T", 64))
-    if seq.shape[1] > target_T:
-        # 使用均匀采样
-        indices = np.linspace(0, seq.shape[1] - 1, target_T, dtype=np.int32)
-        seq = seq[:, indices]
+    if enable_downsample and seq.shape[1] > target_T:
+        seq = _smart_downsample(seq, temporal, target_T)
+
+
     
     # === 标量特征处理 ===
     default_qp = float(getattr(cfg, "default_qp", 127))
