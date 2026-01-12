@@ -305,13 +305,19 @@ class GOPRunner:
                 
                 # 如果是最后一个 GOP，直接 push（终止步）
                 if is_last_gop:
+                    # 计算 episode bonus（全局优化信号）
+                    episode_bonus = self.rw.compute_episode_bonus()
+                    
+                    # 将 episode bonus 加到最后一个 GOP 的 reward
+                    r_final = r + episode_bonus * 0.3  # 权重 0.3
+                    
                     seq = pend["seq"]
                     sca = pend["scalars"]
                     a = pend["a"]
                     seq2 = np.zeros_like(seq)
                     sca2 = np.zeros_like(sca)
-                    self.buf.push(seq, sca, a, r, seq2, sca2, done=True)
-                    self._log(3, f"[Replay] Push terminal: gop_id={gop_id}")
+                    self.buf.push(seq, sca, a, r_final, seq2, sca2, done=True)
+                    self._log(3, f"[Replay] Push terminal: gop_id={gop_id} r_gop={r:.4f} bonus={episode_bonus:.4f} r_total={r_final:.4f}")
                     self.pending.pop(gop_id)
                     self._last_gop_id = None
                     
@@ -371,10 +377,48 @@ class GOPRunner:
         self._cleanup_pending()
     
     def _cleanup_pending(self):
-        """清理残留的 pending 项"""
-        if len(self.pending) > 0:
-            self._log(1, f"[Run][WARN] 退出时还有 {len(self.pending)} 个待处理的 GOP")
-            self.pending.clear()
+        """
+        清理残留的 pending 项
+        
+        如果编码器退出时仍有未完成的 GOP（已收到 FB 但未构成完整转移），
+        将它们作为终止状态存入 Replay Buffer，避免丢失训练数据。
+        """
+        if len(self.pending) == 0:
+            return
+        
+        pending_ids = sorted(self.pending.keys())
+        self._log(1, f"[Run][CLEANUP] 处理 {len(pending_ids)} 个剩余 GOP: {pending_ids}")
+        
+        for gop_id in pending_ids:
+            pend = self.pending[gop_id]
+            
+            # 只处理已经收到 reward 的 GOP（表示 FB 已处理）
+            if "reward" in pend:
+                seq = pend["seq"]
+                sca = pend["scalars"]
+                a = pend["a"]
+                r = pend["reward"]
+                
+                # 使用零状态作为终止状态
+                seq2 = np.zeros_like(seq)
+                sca2 = np.zeros_like(sca)
+                
+                # 存入 Replay Buffer 作为终止状态
+                self.buf.push(seq, sca, a, r, seq2, sca2, done=True)
+                self._log(2, f"[Cleanup] 保存 GOP {gop_id} 为终止状态 (reward={r:.4f})")
+                
+                # 统计为完成的 episode
+                if not pend.get("done", False):
+                    # 如果这个 GOP 还没有触发 episode 结束统计，现在触发
+                    info = self.rw.on_episode_end()
+                    self.epoch_episodes += 1
+                    self._log(2, f"[Cleanup] Episode 结束统计: return={info.get('episode_return', 0):.2f}")
+            else:
+                # 没有 reward 的 GOP（只有 RQ 没有 FB）直接丢弃
+                self._log(2, f"[Cleanup] 丢弃未完成 GOP {gop_id} (无 FB)")
+        
+        self.pending.clear()
+        self._log(1, f"[Run][CLEANUP] 清理完成")
     
     def print_epoch_summary(self, epoch_id: int, epoch_total: int, interrupted: bool = False):
         """打印 epoch 统计"""

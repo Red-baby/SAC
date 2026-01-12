@@ -58,9 +58,13 @@ class GOPRewardComputer:
         # EMA 用于追踪平均质量
         self.score_ema = EMA(beta=0.9, init=None)
         
+        # 记录每个 GOP 的 score（用于计算 episode bonus）
+        self.gop_scores = []
+        
     def reset(self):
         """重置 episode 状态"""
         self.last_gop_score = None
+        self.gop_scores = []
         self.episode_return = 0.0
         self.gop_count = 0
         self.total_bits = 0.0
@@ -104,28 +108,53 @@ class GOPRewardComputer:
         # 计算质量差异
         quality_gap = (target_score - score) / max(target_score, eps)
         
+        # === 码率硬约束检查（30% 涨幅限制）===
+        BITRATE_HARD_CAP = 1.30  # 允许最多 +30%
+        if bitrate_ratio > BITRATE_HARD_CAP:
+            # 严重超标：立即给予大幅惩罚，忽略质量
+            over_ratio = bitrate_ratio - BITRATE_HARD_CAP
+            r = -min(5.0, over_ratio * 5.0)  # 超标越多惩罚越重
+            # 记录状态后直接返回
+            self.last_gop_score = score
+            self.score_ema.update(score)
+            self.episode_return += r
+            self.gop_count += 1
+            self.total_bits += bitrate * gop_size
+            self.total_score += score * gop_size
+            self.total_target_bits += target_bitrate * gop_size
+            self.total_target_score += target_score * gop_size
+            self.total_frames += gop_size
+            self.gop_scores.append(score)
+            return float(r)
+        
         # === 主要奖励逻辑 ===
         r = 0.0
         
         if score >= target_score:
-            # 码率节省奖励：节省越多奖励越高（clip 到合理范围）
-            bitrate_saved = min(0.5, max(0.0, 1.0 - bitrate_ratio))  # clip 到 [0, 0.5]
-            r_bitrate_save = bitrate_save_weight * bitrate_saved
+            # 质量达标：奖励码率节省
+            if bitrate_ratio <= 1.0:
+                # 码率节省：奖励
+                bitrate_saved = min(0.5, max(0.0, 1.0 - bitrate_ratio))
+                r_bitrate_save = bitrate_save_weight * bitrate_saved
+            else:
+                # 码率超标但在硬约束内：轻微惩罚
+                over_ratio = min(0.3, bitrate_ratio - 1.0)  # clip 到 [0, 0.3]
+                r_bitrate_save = -over_ratio * 1.5  # 惩罚系数 1.5
             
-            # 质量超标奖励（小幅度，clip 防止过大）
-            quality_bonus = min(0.1, (score - target_score) / 100.0)  # clip 到 [0, 0.1]
+            # 质量超标奖励（小幅度）
+            quality_bonus = min(0.1, (score - target_score) / 100.0)
             r_quality = 0.1 * quality_bonus
             
             r += r_bitrate_save + r_quality
             
         else:
             # === 质量未达标：惩罚质量差距 ===
-            quality_gap_clipped = min(0.5, quality_gap)  # clip 到 [0, 0.5]
+            quality_gap_clipped = min(0.5, quality_gap)
             r_quality_penalty = -quality_gap_clipped
             
             # 如果码率已经很高但质量仍未达标，额外惩罚
             if bitrate_ratio > 1.0:
-                over_bitrate = min(0.5, bitrate_ratio - 1.0)  # clip 超标部分
+                over_bitrate = min(0.5, bitrate_ratio - 1.0)
                 r_over_bitrate = -0.5 * over_bitrate
             else:
                 r_over_bitrate = 0.0
@@ -135,9 +164,10 @@ class GOPRewardComputer:
         # === 质量平滑惩罚（减少 GOP 间震荡）===
         if self.last_gop_score is not None and not is_first_gop:
             score_diff = abs(score - self.last_gop_score)
-            score_diff_norm = score_diff / 5.0  # 归一化（5 dB 差异是很大的波动）
+            score_diff_norm = score_diff / 5.0
             r_smooth = -quality_smooth_weight * score_diff_norm
             r += r_smooth
+
         
         # 更新状态
         self.last_gop_score = score
@@ -150,7 +180,56 @@ class GOPRewardComputer:
         self.total_target_score += target_score * gop_size
         self.total_frames += gop_size
         
+        # 记录当前 GOP 的 score（用于 episode bonus）
+        self.gop_scores.append(score)
+        
         return float(r)
+    
+    def compute_episode_bonus(self) -> float:
+        """
+        计算 episode 级别的奖励 bonus
+        
+        考虑因素：
+        1. 整体码率控制精度
+        2. 整体质量达标情况
+        3. 质量一致性（方差）
+        """
+        eps = 1e-6
+        bonus = 0.0
+        
+        if self.total_frames == 0 or self.gop_count == 0:
+            return 0.0
+        
+        # 1. 整体码率控制精度
+        avg_bitrate = self.total_bits / self.total_frames
+        avg_target_bitrate = self.total_target_bits / self.total_frames
+        bitrate_error = abs(avg_bitrate - avg_target_bitrate) / max(avg_target_bitrate, eps)
+        
+        if bitrate_error < 0.05:  # 在 ±5% 内
+            bonus += 0.5
+        else:
+            bonus -= min(1.0, bitrate_error * 2.0)
+        
+        # 2. 整体质量达标
+        avg_score = self.total_score / self.total_frames
+        avg_target_score = self.total_target_score / self.total_frames
+        quality_error = max(0, avg_target_score - avg_score) / max(avg_target_score, eps)
+        
+        if quality_error < 0.02:  # 质量差距小于 2%
+            bonus += 0.5
+        else:
+            bonus -= min(1.0, quality_error * 3.0)
+        
+        # 3. 质量一致性（方差越小越好）
+        if len(self.gop_scores) > 1:
+            import numpy as np
+            score_variance = float(np.var(self.gop_scores))
+            consistency_penalty = min(0.5, score_variance / 100.0)  # 归一化
+            bonus -= consistency_penalty
+        
+        # Clip 到合理范围
+        import numpy as np
+        return float(np.clip(bonus, -3.0, 3.0))
     
     def on_episode_end(self) -> dict:
         """Episode 结束时的总结"""

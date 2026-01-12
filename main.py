@@ -9,7 +9,7 @@ from dataset import add_dataset_args, build_cmds_from_dataset
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rl-dir", type=str, default=Config.rl_dir)
-    ap.add_argument("--epochs", type=int, default=1)
+    ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--start-epoch", type=int, default=1)
     ap.add_argument("--mode", type=str, default="train", choices=["train","infer"])
     ap.add_argument("--encoder", type=str, default=Config.encoder_path)
@@ -48,7 +48,7 @@ def parse_args():
         "|--stat-in|/rl/park_mobile1pass.log"
         "|--stat-out|2pass.log"
         "|--score-max|50.5|--score-avg|40.5|--score-min|38.5"
-        "|--fps|24|--preset|7|--keyint|120|--bframes|15|--threads|64|--parallel-frames|1"
+        "|--fps|24|--preset|7|--keyint|225|--bframes|15|--threads|64|--parallel-frames|1"
         "|--bitrate|2125"
     ])
 
@@ -69,9 +69,10 @@ def _extract_fps_from_argv(argv: List[str]) -> float:
         pass
     return 25.0  # 默认值
 
-def run_one(runner: RLRunner, cfg: Config, argv: List[str], epoch_id: int, epoch_total: int):
+def run_one(runner: GOPRunner, cfg: Config, argv: List[str], epoch_id: int, epoch_total: int, video_idx: int = 0):
     # track epoch for encoder logs
     cfg.curr_epoch = epoch_id
+    cfg.video_idx = video_idx  # 添加视频索引
     if hasattr(runner, "set_epoch"):
         runner.set_epoch(epoch_id)
     
@@ -105,7 +106,8 @@ def run_one(runner: RLRunner, cfg: Config, argv: List[str], epoch_id: int, epoch
 def _cleanup_rl_dir(rl_dir: str):
     """清理 rl_io 目录中的残留 JSON 文件"""
     import glob
-    patterns = ["mg????_rq.json", "mg????_qp.json", "mg????_fb.json"]
+    patterns = ["mg????_rq.json", "mg????_qp.json", "mg????_fb.json",
+                "gop????_rq.json", "gop????_qp.json", "gop????_fb.json"]
     removed_count = 0
     for pattern in patterns:
         files = glob.glob(os.path.join(rl_dir, pattern))
@@ -118,7 +120,7 @@ def _cleanup_rl_dir(rl_dir: str):
     if removed_count > 0:
         print(f"[MAIN] 已清理 {removed_count} 个残留文件")
 
-def save_full_checkpoint(runner: RLRunner, epoch_id: int, cfg: Config):
+def save_full_checkpoint(runner: GOPRunner, epoch_id: int, cfg: Config):
     """保存完整的训练状态（模型 + Replay Buffer + 其他状态）"""
     import torch
     ckpt_path = os.path.join(cfg.ckpt_dir, f"checkpoint_epoch_{epoch_id}.pt")
@@ -131,10 +133,8 @@ def save_full_checkpoint(runner: RLRunner, epoch_id: int, cfg: Config):
         if cfg.save_replay_buffer:
             extra_path = os.path.join(cfg.ckpt_dir, f"extra_epoch_{epoch_id}.pt")
             extra_state = {
-                'total_steps': runner.total_steps,
+                'total_steps': getattr(runner, 'total_steps', 0),
                 'epoch_id': epoch_id,
-                'lambda': runner.rw.lam,
-                'score_ema': runner.rw.score_ema.val,
             }
             # 保存 replay buffer（如果存在且不为空）
             if runner.buf and len(runner.buf) > 0:
@@ -142,7 +142,7 @@ def save_full_checkpoint(runner: RLRunner, epoch_id: int, cfg: Config):
             torch.save(extra_state, extra_path)
             print(f"[Checkpoint] 已保存训练状态 -> {extra_path}")
 
-def load_full_checkpoint(runner: RLRunner, ckpt_path: str):
+def load_full_checkpoint(runner: GOPRunner, ckpt_path: str):
     """加载完整的训练状态"""
     import torch
     
@@ -160,11 +160,9 @@ def load_full_checkpoint(runner: RLRunner, ckpt_path: str):
     if os.path.exists(extra_path):
         try:
             extra_state = torch.load(extra_path, map_location=runner.cfg.device)
-            runner.total_steps = extra_state.get('total_steps', 0)
-            runner.rw.lam = extra_state.get('lambda', runner.cfg.lambda_init)
-            if 'score_ema' in extra_state and extra_state['score_ema'] is not None:
-                runner.rw.score_ema.val = extra_state['score_ema']
-            print(f"[Checkpoint] 已加载训练状态: total_steps={runner.total_steps}, lambda={runner.rw.lam:.6f}")
+            if hasattr(runner, 'total_steps'):
+                runner.total_steps = extra_state.get('total_steps', 0)
+            print(f"[Checkpoint] 已加载训练状态: total_steps={extra_state.get('total_steps', 0)}")
             
             # 恢复 replay buffer（需要在模型初始化后）
             if 'replay_buffer' in extra_state:
@@ -266,16 +264,32 @@ def main():
         if cfg.mode == "train":
             save_full_checkpoint(runner, end_ep, cfg)
     else:
-        epoch_total = (end_ep - start_ep + 1) * max(1, len(args.videos))
-        eid = start_ep
-        for ep in range(start_ep, end_ep + 1):
-            for cmd_bar in args.videos:
-                argv = _split_cmd_bar(cmd_bar)
-                run_one(runner, cfg, argv, epoch_id=eid, epoch_total=epoch_total)
-                eid += 1
+        # Pre-process all video arguments once
+        all_video_args = [_split_cmd_bar(cmd_bar) for cmd_bar in args.videos]
+        
+        # epoch_total here refers to the total number of outer loop iterations (epochs)
+        # The original epoch_total was the total number of individual video runs.
+        # We'll use `total_video_runs` for the total count of `run_one` calls.
+        total_epochs = (end_ep - start_ep + 1)
+        total_video_runs = total_epochs * max(1, len(all_video_args))
+
+        for eid in range(start_ep, end_ep + 1):
+            print(f"\n[MAIN] ===== Epoch {eid}/{total_epochs} =====")
+            for vid_idx, argv in enumerate(all_video_args):
+                print(f"[MAIN] 当前视频 FPS: {_extract_fps_from_argv(argv)}") # Using existing _extract_fps_from_argv
+                try:
+                    run_one(runner, cfg, argv, epoch_id=eid, epoch_total=total_epochs, video_idx=vid_idx)
+                except KeyboardInterrupt:
+                    print("\n[MAIN] 捕获到键盘中断信号，正在优雅退出...")
+                    runner.print_epoch_summary(eid, total_epochs, interrupted=True)
+                    # 保存当前状态
+                    if cfg.mode == "train":
+                        save_full_checkpoint(runner, eid, cfg)
+                    print("\n[MAIN] 程序被用户中断，已退出。")
+                    return   # 保存最终模型（仅训练模式）
             # 每隔 N 个 epoch 保存一次（仅训练模式）
-            if cfg.mode == "train" and cfg.ckpt_interval > 0 and (ep % cfg.ckpt_interval) == 0:
-                save_full_checkpoint(runner, ep, cfg)
+            if cfg.mode == "train" and cfg.ckpt_interval > 0 and (eid % cfg.ckpt_interval) == 0:
+                save_full_checkpoint(runner, eid, cfg)
         print("[MAIN] single-video list finished.")
         # 保存最终模型（仅训练模式）
         if cfg.mode == "train":

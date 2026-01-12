@@ -101,16 +101,22 @@ def _smart_downsample(seq: np.ndarray, temporal: np.ndarray, target_T: int) -> n
     
     # 合并所有帧
     if len(result_frames) == 0:
-        # 极端情况：没有任何帧，返回均匀采样
-        indices = np.linspace(0, T - 1, target_T, dtype=np.int32)
-        return seq[:, indices]
+        # 极端情况：没有任何帧，返回零填充
+        return np.zeros((seq.shape[0], target_T), dtype=np.float32)
     
     result = np.concatenate(result_frames, axis=1)
     
-    # 如果结果仍然超过目标长度，进行最终的均匀截断
+    # 确保输出长度正好等于 target_T
+    C = result.shape[0]
     if result.shape[1] > target_T:
+        # 超过目标长度：均匀采样
         indices = np.linspace(0, result.shape[1] - 1, target_T, dtype=np.int32)
         result = result[:, indices]
+    elif result.shape[1] < target_T:
+        # 不足目标长度：零填充到右侧
+        padded = np.zeros((C, target_T), dtype=np.float32)
+        padded[:, :result.shape[1]] = result
+        result = padded
     
     return result
 
@@ -276,93 +282,3 @@ def build_state_from_gop_rq(cfg, rq: dict, g_state: dict) -> Tuple[np.ndarray, n
     return seq, scalars, gop_id, gop_size, target_bitrate, target_score
 
 
-def build_state_from_rq(cfg, rq: dict, g_state: dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int, float, float]:
-    """
-    原始的 Mini-GOP 级别状态构建函数（保持向后兼容）
-    
-    Returns:
-      seq: [C=6, T] with order [poise, comp, rdcost, score_target, bit_target, qp/256]
-      scalars: [9]  = [d_score_alloc, d_score_ratio, d_score_gop_alloc,
-                        d_bits_ratio,  i_bits_alloc,  i_bits_gop_alloc,
-                        mg_pos_abs, score_ema/100, last_action/(action_max-action_min)]
-      qps: [mg_size] 当前 minigop 内每一帧的 qp（原始值，未归一化）
-      temporal_level: [mg_size] 当前 minigop 内每一帧的时域等级 [1,2,3,4,6]
-      mg_id, mg_size, bits_alloc(gop), score_alloc(gop)
-    """
-    T = int(getattr(cfg, "frames_per_mg", 16))
-    poise = pad_or_trim(rq.get("poise", []), T, 0.0).astype(np.float32)
-    comp  = pad_or_trim(rq.get("comp",  []), T, 0.0).astype(np.float32)
-    rdc   = pad_or_trim(rq.get("rdcost",[]), T, 0.0).astype(np.float32)
-    score_tgt = pad_or_trim(rq.get("score", []), T, 0.0).astype(np.float32)  # score_target
-    if len(rq.get("score_target", [])) > 0:
-        score_tgt = pad_or_trim(rq.get("score_target", []), T, 0.0).astype(np.float32)
-    bit_tgt   = pad_or_trim(rq.get("bits",   []), T, 0.0).astype(np.float32) # bits_target
-    if len(rq.get("bit_target", [])) > 0:
-        bit_tgt = pad_or_trim(rq.get("bit_target", []), T, 0.0).astype(np.float32)
-
-    comp  = log_process(comp,  getattr(cfg, "apply_log_comp", True),   getattr(cfg, "robust_scale_seq", True), getattr(cfg, "robust_clip", 5.0))
-    rdc   = log_process(rdc,   getattr(cfg, "apply_log_rdcost", True), getattr(cfg, "robust_scale_seq", True), getattr(cfg, "robust_clip", 5.0))
-    bit_tgt = log_process(bit_tgt, getattr(cfg, "apply_log_bit_target", True), getattr(cfg, "robust_scale_seq", True), getattr(cfg, "robust_clip", 5.0))
-    score_tgt = (score_tgt / 100.0).astype(np.float32)
-
-    # 读取 qps（当前 minigop 内每一帧的 qp）
-    qps_raw = rq.get("qps", [])
-    mg_id = int(rq.get("mg_id", 0))
-    mg_size = int(rq.get("mg_size", T))
-    mg_size = max(1, mg_size)
-    
-    # 确保 qps 长度为 T（与 seq 对齐），不足则用最后一个值填充，超出则截断
-    if len(qps_raw) == 0:
-        # 如果没有 qps，尝试从 baseqp 或 base_q 获取（向后兼容）
-        baseqp_fallback = float(rq.get("baseqp", rq.get("base_q", 0.0)))
-        qps = np.full(T, baseqp_fallback, dtype=np.float32)
-    else:
-        qps = pad_or_trim(qps_raw, T, qps_raw[-1] if len(qps_raw) > 0 else 0.0).astype(np.float32)
-    
-    # 归一化 qps（除以 256.0，与原来的 baseqp/256.0 保持一致的范围）
-    qps_norm = (qps / 256.0).astype(np.float32)
-    
-    # 将 qps 作为序列特征添加到 seq 中（第 6 个通道）
-    seq = np.stack([poise, comp, rdc, score_tgt, bit_tgt, qps_norm], axis=0).astype(np.float32)
-    
-    d_score_ratio = float(rq.get("score_ratio", rq.get("d_score_ratio", 1.0)))
-    d_bits_ratio  = float(rq.get("bits_ratio",  rq.get("d_bits_ratio", 1.0)))
-    d_score_alloc = float(rq.get("score_alloc", rq.get("d_score_alloc", 0.0)))
-    d_score_gop_alloc = float(rq.get("score_gop_alloc", rq.get("d_score_gop_alloc", d_score_alloc)))
-    i_bits_alloc = float(rq.get("bits_alloc", rq.get("i_bits_alloc", 0.0)))
-    i_bits_gop_alloc = float(rq.get("bits_gop_alloc", rq.get("i_bits_gop_alloc", i_bits_alloc)))
-
-    mg_pos_abs = float(max(0, mg_id))
-    action_min = float(getattr(cfg, "action_min", 0.0))
-    action_max = float(getattr(cfg, "action_max", action_min + 1.0))
-    action_range = max(1.0, action_max - action_min)
-    last_action = float(g_state.get("last_action", action_min))
-    last_action_norm = (last_action - action_min) / action_range
-
-    # scalars 不再包含 qp（已作为序列特征），保持 9 维
-    scalars = np.array([
-        d_score_alloc, d_score_ratio, d_score_gop_alloc,
-        d_bits_ratio,  i_bits_alloc,  i_bits_gop_alloc,
-        mg_pos_abs,    g_state.get("score_ema",0.0)/100.0, last_action_norm
-    ], dtype=np.float32)
-    
-    # 返回原始 qps（未归一化，长度为 mg_size，用于后续处理）
-    if len(qps_raw) > 0:
-        qps_original = pad_or_trim(qps_raw, mg_size, qps_raw[-1] if len(qps_raw) > 0 else 0.0).astype(np.float32)
-    else:
-        baseqp_fallback = float(rq.get("baseqp", rq.get("base_q", 0.0)))
-        qps_original = np.full(mg_size, baseqp_fallback, dtype=np.float32)
-    
-    # 读取 temporal_level（时域等级）
-    temporal_level_raw = rq.get("temporal_level", [])
-    if len(temporal_level_raw) > 0:
-        # 确保长度为 mg_size，不足则用最后一个值填充，超出则截断
-        temporal_level = pad_or_trim(temporal_level_raw, mg_size, temporal_level_raw[-1] if len(temporal_level_raw) > 0 else 6).astype(np.int32)
-    else:
-        # 如果没有提供，默认填充为 6
-        temporal_level = np.full(mg_size, 6, dtype=np.int32)
-
-    bits_alloc = i_bits_gop_alloc if i_bits_gop_alloc > 0 else i_bits_alloc
-    score_alloc = d_score_gop_alloc if d_score_gop_alloc > 0 else d_score_alloc
-
-    return seq, scalars, qps_original, temporal_level, mg_id, mg_size, bits_alloc, score_alloc

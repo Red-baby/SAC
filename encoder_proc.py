@@ -15,12 +15,14 @@ def _win_no_window_flags(cfg):
         pass
     return flags
 
-def _build_log_path(cfg):
+def _build_log_path(cfg, video_idx=None):
     base_dir = str(getattr(cfg, "encoder_log_dir", "./logs/encoder"))
     os.makedirs(base_dir, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     ep = getattr(cfg, "curr_epoch", None) or getattr(cfg, "epoch_idx", None)
     tag = f"_ep{int(ep)}" if ep is not None else ""
+    if video_idx is not None:
+        tag += f"_vid{int(video_idx)}"
     return os.path.join(base_dir, f"encoder_{ts}{tag}.log")
 
 def launch_encoder(cfg, video_args: list[str]):
@@ -53,7 +55,8 @@ def launch_encoder(cfg, video_args: list[str]):
     to_console = bool(getattr(cfg, "show_encoder_output", True))
 
     if to_file:
-        log_path = _build_log_path(cfg)
+        video_idx = getattr(cfg, "video_idx", None)
+        log_path = _build_log_path(cfg, video_idx)
         try: cfg.last_encoder_log_path = log_path
         except Exception: pass
         log_fp = open(log_path, "a", encoding="utf-8", buffering=1)
@@ -108,10 +111,11 @@ def start_monitor(enc: subprocess.Popen, cfg, runner, stop_evt: threading.Event)
         
         while time.time() < deadline:
             # 检查是否还有未处理的请求或反馈文件
-            has_rq = bool(glob.glob(os.path.join(cfg.rl_dir, "mg????_rq.json")))
-            has_fb = bool(glob.glob(os.path.join(cfg.rl_dir, "mg????_fb.json")))
-            has_qp = bool(glob.glob(os.path.join(cfg.rl_dir, "mg????_qp.json")))
-            in_flight = len(getattr(runner, "pending", {})) > 0
+            has_rq = bool(glob.glob(os.path.join(cfg.rl_dir, "gop????_rq.json")))
+            has_fb = bool(glob.glob(os.path.join(cfg.rl_dir, "gop????_fb.json")))
+            has_qp = bool(glob.glob(os.path.join(cfg.rl_dir, "gop????_qp.json")))
+            in_flight_count = len(getattr(runner, "pending", {}))
+            in_flight = in_flight_count > 0
             
             if not has_rq and not has_fb and not has_qp and not in_flight:
                 print("[ENC][MONITOR] ✓ 所有请求和反馈已处理完毕")
@@ -129,7 +133,7 @@ def start_monitor(enc: subprocess.Popen, cfg, runner, stop_evt: threading.Event)
                 if has_qp:
                     status_parts.append(f"待消费QP")
                 if in_flight:
-                    status_parts.append(f"{in_flight}个MG等待FB")
+                    status_parts.append(f"{in_flight_count}个GOP等待FB")
                 
                 status_str = ", ".join(status_parts) if status_parts else "无"
                 print(f"[ENC][MONITOR] 等待中... ({status_str})")
@@ -138,21 +142,22 @@ def start_monitor(enc: subprocess.Popen, cfg, runner, stop_evt: threading.Event)
             time.sleep(0.1)
         
         if not all_clear:
-            has_rq = bool(glob.glob(os.path.join(cfg.rl_dir, "mg????_rq.json")))
-            has_fb = bool(glob.glob(os.path.join(cfg.rl_dir, "mg????_fb.json")))
-            in_flight = len(getattr(runner, "pending", {})) > 0
+            has_rq = bool(glob.glob(os.path.join(cfg.rl_dir, "gop????_rq.json")))
+            has_fb = bool(glob.glob(os.path.join(cfg.rl_dir, "gop????_fb.json")))
+            in_flight_count = len(getattr(runner, "pending", {}))
+            in_flight = in_flight_count > 0
             
             print(f"[ENC][MONITOR] ⚠ 等待超时，仍有未完成项")
             if has_rq:
-                rq_files = glob.glob(os.path.join(cfg.rl_dir, "mg????_rq.json"))
+                rq_files = glob.glob(os.path.join(cfg.rl_dir, "gop????_rq.json"))
                 print(f"[ENC][MONITOR]   - {len(rq_files)} 个未处理的 RQ: {[os.path.basename(f) for f in rq_files]}")
             if has_fb:
-                fb_files = glob.glob(os.path.join(cfg.rl_dir, "mg????_fb.json"))
+                fb_files = glob.glob(os.path.join(cfg.rl_dir, "gop????_fb.json"))
                 print(f"[ENC][MONITOR]   - {len(fb_files)} 个未处理的 FB: {[os.path.basename(f) for f in fb_files]}")
             if in_flight:
                 pending_ids = list(getattr(runner, "pending", {}).keys())
-                print(f"[ENC][MONITOR]   - {len(pending_ids)} 个 MG 等待 FB: {pending_ids}")
-                print(f"[ENC][MONITOR]   原因: 编码器退出前未发送这些 MG 的反馈（可能异常退出）")
+                print(f"[ENC][MONITOR]   - {len(pending_ids)} 个 GOP 等待 FB: {pending_ids}")
+                print(f"[ENC][MONITOR]   原因: 编码器退出前未发送这些 GOP 的反馈（可能异常退出）")
 
         # 发送停止信号给RL循环
         stop_evt.set()
