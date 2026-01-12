@@ -69,6 +69,16 @@ class Config:
     term_tau: float = 0.01
     shaping_w_score_ema: float = 0
 
+    # GOP-level processing (新增)
+    gop_size_standard: int = 225      # 标准 GOP 大小
+    is_gop_level: bool = True         # 是否使用 GOP 级别处理
+    default_qp: int = 127             # 默认 QP 值（用于第一个 GOP）
+
+    # Quality-based bitrate reduction (新增)
+    bitrate_save_weight: float = 1.0      # 质量达标时码率节省的奖励权重
+    quality_smooth_weight: float = 0.1    # GOP 间质量平滑惩罚权重
+    seq_target_T: int = 64                # 序列下采样目标长度（225->64 加速 GRU）
+
     # Checkpoint
     ckpt_dir: str = "./checkpoints"
     ckpt_interval: int = 5  # 每 N 个 epoch 保存一次

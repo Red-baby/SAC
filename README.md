@@ -1,105 +1,108 @@
-# RL Agent for MiniGOP ΔQP (SAC v2)
+# RL Agent for Video Encoding QP Control (v3.0)
 
-- 进程交互：编码器与 RL 通过目录 `rl_io/` 文件握手
-  - 编码器写：`mg%04d_rq.json`（请求）、`mg%04d_fb.json`（反馈）
-  - RL 写：`mg%04d_qp.json`（QP 决策，JSON: {"qp": N}）
-- 终止：`fb.gop_end==1` 表示一个 episode（GOP）结束，RL 在 GOP 末更新约束拉格朗日系数 λ。
+基于强化学习的视频编码 QP（量化参数）控制代理，支持 **Mini-GOP 级别** 和 **GOP 级别** 两种处理模式。
 
-## ✨ 新功能（v2.0）
+## ✨ 新功能（v3.0）
 
-- 🎚️ **日志级别控制**：4 级日志（静默/重要/详细/调试），提高可读性
-- 💾 **Checkpoint 管理**：定期保存和加载完整训练状态（模型+Replay Buffer）
-- 📊 **TensorBoard 可视化**：实时监控训练曲线和性能指标
+- 🎯 **GOP 级别 QP 控制**：支持 GOP 级别的单 QP 输出，实现质量达标时自动降码率
+- 🧠 **Self-Attention 架构**：替代 GRU，更好地捕捉帧间复杂度关系
+- ⚖️ **平衡 Reward 设计**：质量达标优先节省码率，GOP 间质量平滑
+- 📉 **序列下采样**：225 帧 → 64 帧，加速推理
 
-📖 **详细文档**：查看 [FEATURES.md](FEATURES.md) 了解完整使用说明。
+## 处理模式
+
+### GOP 级别模式（推荐）
+```python
+from gop_runner import GOPRunner
+
+runner = GOPRunner(cfg)
+runner.serve_loop(stop_event)
+```
+
+**文件格式**：
+- 编码器写：`gop%04d_rq.json`、`gop%04d_fb.json`
+- RL 写：`gop%04d_qp.json`（`{"qp": 127}`）
+
+### Mini-GOP 级别模式
+```python
+from io_runner import RLRunner
+
+runner = RLRunner(cfg)
+runner.serve_loop(stop_event)
+```
 
 ## 快速开始
 
-### 基础训练
+### 训练
 ```bash
-# 训练 20 个 epoch，详细日志，每 5 个 epoch 保存检查点
 python main.py --epochs 20 --log-level 2 --ckpt-interval 5
 ```
 
-### 从检查点继续训练
+### 从检查点继续
 ```bash
-# 加载 epoch 10 的检查点，继续训练
-python main.py --load-checkpoint ./checkpoints/checkpoint_epoch_10.pt --epochs 30
+python main.py --load-checkpoint ./checkpoints/checkpoint_epoch_10.pt
 ```
 
-### 查看训练曲线
+### TensorBoard 监控
 ```bash
-# 启动 TensorBoard（在另一个终端）
 tensorboard --logdir=./runs
-# 然后在浏览器打开: http://localhost:6006
 ```
 
-## 运行模式
+## 核心配置
 
-### 单视频命令（用 `|` 分隔键值）
-```bash
-python main.py --rl-dir ./rl_io --encoder /path/to/qav1enc \
-  --videos "--input|/data/in.yuv|--input-res|1920x1080|--frames|0|--o|./out.ivf|--csv|./out.csv|--bitrate|2125|--pass|2|--stat-in|./p1.log|--stat-out|./p2.log|--fps|24|--preset|1|--rc-mode|1" \
-  --epochs 20 --ckpt-interval 5
+| 参数 | 默认值 | 说明 |
+|-----|-------|------|
+| `gop_size_standard` | 225 | 标准 GOP 大小 |
+| `seq_target_T` | 64 | 序列下采样长度 |
+| `bitrate_save_weight` | 1.0 | 码率节省奖励权重 |
+| `quality_smooth_weight` | 0.1 | 质量平滑惩罚权重 |
+| `default_qp` | 127 | 默认 QP 值 |
+
+## 网络架构
+
+```
+Seq[6, 64] → Conv1D → PositionalEncoding → [CLS] + Tokens
+           → TransformerEncoder (2层, 4头)
+           → [CLS] Output → + Scalars[11] → MLP → Q-values
 ```
 
-### 数据集模式
-```bash
-python main.py --rl-dir ./rl_io --encoder /path/to/qav1enc \
-  --use-dataset --dataset-inputs "/dataset/*.yuv" --stat-dir ./1pass_logs --out-dir ./outputs \
-  --epochs 50 --log-level 1
+**Scalars 特征 (11维)**：
+1. gop_progress, bitrate_ratio, encoded_score, encoded_comp
+2. last_bitrate_ratio, last_score, last_comp, last_qpbase
+3. target_score, target_bitrate, **is_first_gop**
+
+## Reward 设计
+
 ```
+if score >= target_score:
+    r = bitrate_save_weight * min(0.5, 1 - bitrate_ratio)  # 奖励码率节省
+else:
+    r = -min(0.5, quality_gap)  # 惩罚质量差距
 
-## 命令行参数
-
-### 训练控制
-- `--epochs N`：训练的 epoch 数量（默认：2）
-- `--start-epoch N`：起始 epoch（默认：1）
-- `--mode {train,infer}`：训练或推理模式（默认：train）
-
-### 日志控制
-- `--log-level {0,1,2,3}`：日志级别（0=静默, 1=重要, 2=详细, 3=调试）
-- `--no-tensorboard`：禁用 TensorBoard
-
-### Checkpoint
-- `--ckpt-dir DIR`：检查点保存目录（默认：./checkpoints）
-- `--ckpt-interval N`：每 N 个 epoch 保存一次（默认：5）
-- `--load-checkpoint PATH`：加载检查点继续训练
-- `--save-replay-buffer`：同时保存 Replay Buffer
-
-### 其他
-- `--device {cpu,cuda,cuda:0}`：训练设备
-- `--baseline-stats PATH`：基线统计文件路径
-
-完整参数列表：`python main.py --help`
-
-## 依赖
-- Python 3.9+
-- PyTorch >= 2.0
-- NumPy
-- TensorBoard（可选，用于可视化）
-
-```bash
-# 安装核心依赖
-pip install torch torchvision numpy
-
-# 安装可选依赖（TensorBoard）
-pip install tensorboard
+r -= quality_smooth_weight * |score - last_score|  # 平滑惩罚
 ```
 
 ## 项目结构
 ```
 SAC/
 ├── main.py              # 主入口
-├── config.py            # 配置文件（新增日志和 checkpoint 配置）
-├── sac_agent.py         # SAC 算法（新增 checkpoint 方法）
-├── io_runner.py         # RL 循环（新增日志控制和 TensorBoard）
-├── models.py            # 神经网络模型
+├── config.py            # 配置（含 GOP 级别参数）
+├── gop_runner.py        # GOP 级别 Runner（新）
+├── io_runner.py         # Mini-GOP 级别 Runner
+├── models.py            # 网络（Self-Attention）
+├── state.py             # 状态构建（含下采样）
+├── reward.py            # 奖励函数（含 GOPRewardComputer）
+├── sac_agent.py         # D3QN 算法
 ├── replay.py            # Replay Buffer
-├── reward.py            # 奖励函数
-├── state.py             # 状态构建
-├── encoder_proc.py      # 编码器进程管理
-├── checkpoints/         # 检查点保存目录（自动创建）
-├── runs/                # TensorBoard 日志（自动创建）
-└── FEATURES.md          # 新功能详细文档
+├── utils.py             # 工具函数
+├── checkpoints/         # 检查点
+└── runs/                # TensorBoard 日志
 ```
+
+## 依赖
+```bash
+pip install torch numpy tensorboard
+```
+
+- Python 3.9+
+- PyTorch >= 2.0

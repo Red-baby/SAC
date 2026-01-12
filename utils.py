@@ -57,6 +57,30 @@ def pad_or_trim(arr, T, fill=0.0):
         out[:len(arr)] = np.array(arr, dtype=np.float32)
     return out
 
+def circular_pad(arr, target_len, fill=0.0):
+    """
+    循环 padding：当数组长度不足时，从头开始循环复制数据填充
+    例如：arr=[1,2,3], target_len=5 -> [1,2,3,1,2]
+    
+    Args:
+        arr: 输入数组
+        target_len: 目标长度
+        fill: 当输入为空时的填充值
+    
+    Returns:
+        长度为 target_len 的 numpy 数组
+    """
+    arr = list(arr) if arr is not None else []
+    if len(arr) == 0:
+        return np.full((target_len,), fill, dtype=np.float32)
+    if len(arr) >= target_len:
+        return np.array(arr[:target_len], dtype=np.float32)
+    
+    result = np.zeros((target_len,), dtype=np.float32)
+    for i in range(target_len):
+        result[i] = arr[i % len(arr)]
+    return result
+
 def robust_standardize(x: np.ndarray, clip: float = 5.0):
     x = x.astype(np.float32)
     med = np.median(x)

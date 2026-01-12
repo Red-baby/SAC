@@ -21,7 +21,7 @@ class ReplayBuffer:
     def push(self, seq, sca, a, r, seq2, sca2, done):
         i = self._p
         self._seq[i]  = seq;    self._sca[i]  = sca
-        self._a[i]    = a
+        self._a[i]    = a;      self._r[i]    = r  # 修复: 保存 reward 值
         self._seq2[i] = seq2;   self._sca2[i] = sca2
         self._d[i]    = float(done)
         self._p = (self._p + 1) % self.capacity
