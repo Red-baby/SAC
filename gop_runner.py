@@ -65,6 +65,9 @@ class GOPRunner:
         self.total_steps = 0
         self._gop_seen = 0
         
+        # 记录已处理的 RQ (gop_id)，防止重复处理
+        self.processed_rq_ids = set()
+        
         # Epoch 统计
         self.epoch_episodes = 0
         self.epoch_total_reward = 0.0
@@ -83,7 +86,8 @@ class GOPRunner:
         
         # FB 读取重试机制
         self.fb_read_failures: Dict[str, int] = defaultdict(int)
-        self.fb_max_retries: int = 5
+        self.fb_max_retries: int = 1800  # 1800 次重试
+        self.fb_retry_wait_ms: int = 1000  # 每次重试等待 1000ms (总计 30 分钟)
         
     def _log(self, level: int, msg: str) -> None:
         """日志输出"""
@@ -130,13 +134,185 @@ class GOPRunner:
         rq_read_failures: Dict[str, int] = defaultdict(int)
         idle_loops = 0
         
+        # 清空已处理的RQ记录（新视频/新episode）
+        self.processed_rq_ids.clear()
+        
+        # 死锁检测：跟踪等待 FB 的时间
+        waiting_for_fb_since: Dict[int, float] = {}  # gop_id -> 开始等待的时间戳
+        fb_wait_timeout_sec = 1800  # 30分钟超时
+        
+        # 记录已跳过的 RQ，避免重复打印日志
+        skipped_rq_ids = set()
+        
         while not stop_evt.is_set():
             progressed = False
+            
+            # === 优先处理 FB，再处理 RQ ===
+            # 先处理所有可用的 FB
+            fb_files = _scan_gop_fb_files(rl_dir)
+            for fb_path in fb_files:
+                try:
+                    fb = safe_read_json(fb_path)
+                    if fb_path in self.fb_read_failures:
+                        self.fb_read_failures.pop(fb_path)
+                except Exception as e:
+                    self.fb_read_failures[fb_path] += 1
+                    retry_count = self.fb_read_failures[fb_path]
+                    
+                    if retry_count < self.fb_max_retries:
+                        # 还有重试机会，等待后继续
+                        if retry_count % 10 == 1:  # 每 10 次重试记录一次日志
+                            self._log(2, f"[GOP][FB][WARN] FB 读取失败 (重试 {retry_count}/{self.fb_max_retries}): {fb_path}: {e}")
+                        time.sleep(self.fb_retry_wait_ms / 1000.0)
+                        continue
+                    else:
+                        # 达到最大重试次数，程序退出
+                        error_msg = (
+                            f"\n{'='*60}\n"
+                            f"[GOP][FB][FATAL] FB 文件读取失败，已重试 {self.fb_max_retries} 次\n"
+                            f"文件路径: {fb_path}\n"
+                            f"错误信息: {e}\n"
+                            f"程序将退出以避免数据不一致\n"
+                            f"{'='*60}\n"
+                        )
+                        self._log(1, error_msg)
+                        
+                        # 抛出异常，让程序退出
+                        raise RuntimeError(f"FB 文件读取失败: {fb_path}") from e
+                
+                gop_id = int(fb.get("gop_id", -1))
+                if gop_id not in self.pending:
+                    self._log(2, f"[GOP][WARN] fb for gop_id={gop_id} has no pending RQ")
+                    try:
+                        os.remove(fb_path)
+                    except:
+                        pass
+                    continue
+                
+                pend = self.pending[gop_id]
+                
+                # 解析 FB 数据
+                bitrate = float(fb.get("bitrate", 0.0))
+                score = float(fb.get("score", 0.0))
+                target_bitrate = float(pend.get("target_bitrate", 2000.0))
+                target_score = float(pend.get("target_score", 40.0))
+                gop_size = int(pend.get("gop_size", 225))
+                is_first_gop = bool(pend.get("is_first_gop", False))
+                
+                # 计算 reward
+                r = self.rw.step(
+                    bitrate=bitrate,
+                    score=score,
+                    target_bitrate=target_bitrate,
+                    target_score=target_score,
+                    gop_size=gop_size,
+                    is_first_gop=is_first_gop,
+                )
+                
+                # 判断是否为 episode 结束（可通过 is_last 字段或其他逻辑）
+                is_last_gop = bool(fb.get("is_last", fb.get("is_last_gop", False)))
+                
+                self._log(2, 
+                    f"[GOP][FB] ④ 接收反馈 -> {fb_path} | gop_id={gop_id} "
+                    f"bitrate={bitrate:.1f}/{target_bitrate:.1f} score={score:.2f}/{target_score:.2f} reward={r:.4f}"
+                )
+                
+                # 记录此 FB 的 score 到 pending，用于下一个 RQ 的验证
+                pend["fb_score"] = score
+                
+                # 记录 reward 和 done
+                pend["reward"] = r
+                pend["done"] = is_last_gop
+                
+                # 如果这个 GOP 之前在等待列表中，清除等待状态
+                if gop_id in waiting_for_fb_since:
+                    waiting_for_fb_since.pop(gop_id)
+                
+                # 如果是最后一个 GOP，直接 push（终止步）
+                if is_last_gop:
+                    # 计算 episode bonus（全局优化信号）
+                    episode_bonus = self.rw.compute_episode_bonus()
+                    
+                    # 将 episode bonus 加到最后一个 GOP 的 reward
+                    r_final = r + episode_bonus * 0.3  # 权重 0.3
+                    
+                    seq = pend["seq"]
+                    sca = pend["scalars"]
+                    a = pend["a"]
+                    seq2 = np.zeros_like(seq)
+                    sca2 = np.zeros_like(sca)
+                    self.buf.push(seq, sca, a, r_final, seq2, sca2, done=True)
+                    self._log(3, f"[Replay] Push terminal: gop_id={gop_id} r_gop={r:.4f} bonus={episode_bonus:.4f} r_total={r_final:.4f}")
+                    self.pending.pop(gop_id)
+                    self._last_gop_id = None
+                    
+                    # Episode 结束统计
+                    info = self.rw.on_episode_end()
+                    self.epoch_episodes += 1
+                    self.epoch_total_reward += info['episode_return']
+                    self.epoch_total_frames += info['total_frames']
+                    
+                    self._log(1, f"\n{'='*60}")
+                    self._log(1, f"[EPISODE END] Epoch #{self.current_epoch}")
+                    self._log(1, f"  GOP 数量: {info['gop_count']}")
+                    self._log(1, f"  总帧数: {info['total_frames']}")
+                    self._log(1, f"  Episode 回报: {info['episode_return']:+.4f}")
+                    self._log(1, f"  平均码率: {info['avg_bitrate']:.2f} ({info['bitrate_saved_pct']:+.1f}%)")
+                    self._log(1, f"  平均质量: {info['avg_score']:.2f} ({info['score_diff_pct']:+.1f}%)")
+                    self._log(1, f"{'='*60}\n")
+                else:
+                    # 非终止 GOP：标记为 last_gop_id，等待下一个 RQ 到来时存储转移
+                    self._last_gop_id = gop_id
+                    
+                    # === 新增：检查是否有后续 GOP 已经在 pending 中 ===
+                    # 如果 GOP 顺序是：RQ2 -> RQ3 -> FB2 -> FB3
+                    # 那么收到 FB2 时，GOP3 已经在 pending 中，可以立即存储转移
+                    next_gop_id = gop_id + 1
+                    if next_gop_id in self.pending:
+                        next_pend = self.pending[next_gop_id]
+                        if "seq" in next_pend and "scalars" in next_pend:
+                            # 下一个 GOP 的状态已经构建好，可以存储转移
+                            self.buf.push(
+                                pend["seq"], pend["scalars"], pend["a"],
+                                r,
+                                next_pend["seq"], next_pend["scalars"],
+                                done=False
+                            )
+                            self._log(3, f"[Replay] Push transition (late FB): gop_id={gop_id} -> {next_gop_id}")
+                            self.pending.pop(gop_id)
+                            self._last_gop_id = None
+                
+                # 训练
+                self.total_steps += 1
+                if self.cfg.mode == "train" and self.total_steps >= self.cfg.start_steps and len(self.buf) >= self.cfg.batch_size:
+                    for _ in range(self.cfg.updates_per_step):
+                        b = self.buf.sample(self.cfg.batch_size, self.cfg.device)
+                        loss_q, eps = self.agent.train_step(b)
+                        self.epoch_train_count += 1
+                        
+                        if self.writer and (self.total_steps % self.cfg.tb_log_interval) == 0:
+                            self.writer.add_scalar('Loss/Q', loss_q, self.total_steps)
+                        
+                        if (self.total_steps % 50) == 0:
+                            self._log(2, f"[Train] step={self.total_steps} Lq={loss_q:.4f}")
+                
+                self._last_action = float(pend["action_qp"])
+                
+                # 删除处理过的 FB
+                try:
+                    os.remove(fb_path)
+                    self._log(3, f"[GOP][FB] ⑤ 删除反馈 -> {fb_path}")
+                except Exception as e:
+                    self._log(2, f"[GOP][WARN] 删除 FB 失败: {e}")
+                
+                progressed = True
             
             # === 处理 RQ ===
             rq_files = _scan_gop_rq_files(rl_dir)
             if rq_files:
                 rq_path = rq_files[0]
+                
+                # 先尝试读取文件，获取 gop_id，判断是否应该处理
                 try:
                     rq = safe_read_json(rq_path)
                     if rq_path in rq_read_failures:
@@ -149,6 +325,68 @@ class GOPRunner:
                     time.sleep(self.cfg.poll_ms / 1000.0)
                     continue
                 
+                # 提取 gop_id
+                gop_id = int(rq.get("gop_id", -1))
+                
+                # === 防止重复处理：检查此 RQ 是否已经处理过 ===
+                if gop_id in self.processed_rq_ids:
+                    self._log(3, f"[GOP][SKIP] GOP {gop_id} 的 RQ 已处理过，跳过")
+                    try:
+                        os.remove(rq_path)  # 删除重复的RQ文件
+                    except Exception:
+                        pass
+                    continue
+                
+                # === 严格顺序处理：检查上一个 GOP 的 FB 是否已处理 ===
+                # 如果未处理，跳过此 RQ，等下一轮循环再处理（不标记为已处理）
+                if gop_id > 0:
+                    prev_gop_id = gop_id - 1
+                    if prev_gop_id in self.pending and "reward" not in self.pending[prev_gop_id]:
+                        # 上一个 GOP 的 FB 还没处理，跳过此 RQ
+                        
+                        # 死锁检测：记录开始等待的时间
+                        current_time = time.time()
+                        if prev_gop_id not in waiting_for_fb_since:
+                            waiting_for_fb_since[prev_gop_id] = current_time
+                            self._log(2, f"[GOP][WAIT] 等待 GOP {prev_gop_id} 的 FB，暂时跳过 GOP {gop_id} 的 RQ")
+                            skipped_rq_ids.clear()  # 清空跳过记录
+                        
+                        # 检查是否超时
+                        wait_duration = current_time - waiting_for_fb_since[prev_gop_id]
+                        if wait_duration > fb_wait_timeout_sec:
+                            error_msg = (
+                                f"\n{'='*60}\n"
+                                f"[GOP][FATAL] 等待 GOP {prev_gop_id} 的 FB 超时！\n"
+                                f"已等待时间: {wait_duration:.1f} 秒 (超时阈值: {fb_wait_timeout_sec} 秒)\n"
+                                f"当前 GOP {gop_id} 无法继续处理\n"
+                                f"可能原因: 编码器卡住、崩溃或 FB 文件写入失败\n"
+                                f"建议检查编码器日志: ./logs/encoder/\n"
+                                f"程序将退出\n"
+                                f"{'='*60}\n"
+                            )
+                            self._log(1, error_msg)
+                            raise RuntimeError(f"等待 GOP {prev_gop_id} 的 FB 超时")
+                        
+                        # 记录已跳过的 RQ，避免重复打印
+                        if gop_id not in skipped_rq_ids:
+                            skipped_rq_ids.add(gop_id)
+                        
+                        # 不删除 RQ 文件，下一轮循环会重新扫描到
+                        # 也不标记为已处理，允许重试
+                        time.sleep(0.5)  # 等待 500ms，给 FB 处理时间
+                        progressed = False  # 标记为未进展，继续循环
+                        continue  # 跳过当前 RQ，继续主循环
+                    else:
+                        # 上一个 GOP 的 FB 已经处理完成，清除等待记录
+                        if prev_gop_id in waiting_for_fb_since:
+                            wait_duration = time.time() - waiting_for_fb_since[prev_gop_id]
+                            self._log(2, f"[GOP][RESUME] GOP {prev_gop_id} 的 FB 已到达 (等待了 {wait_duration:.1f}s)，继续处理 GOP {gop_id}")
+                            waiting_for_fb_since.pop(prev_gop_id)
+                            skipped_rq_ids.clear()  # 清空跳过记录
+                
+                # === 只有真正处理RQ时才标记为已处理 ===
+                self.processed_rq_ids.add(gop_id)
+                
                 # 构建状态
                 g_state = dict(
                     score_ema=self.rw.score_ema.get(),
@@ -157,6 +395,27 @@ class GOPRunner:
                 seq, scalars, gop_id, gop_size, target_bitrate, target_score = build_state_from_gop_rq(
                     self.cfg, rq, g_state
                 )
+                
+                # === 鲁棒性检查：验证 last_score 一致性 ===
+                # 只有当上一个 GOP (gop_id-1) 的 FB 已经收到时才验证
+                if gop_id > 0:
+                    prev_gop_id = gop_id - 1
+                    # 检查上一个 GOP 是否已经收到 FB 并记录了 score
+                    if prev_gop_id in self.pending and "fb_score" in self.pending[prev_gop_id]:
+                        expected_score = self.pending[prev_gop_id]["fb_score"]
+                        last_score_from_rq = float(rq.get("last_score", 0.0))
+                        # 允许小的浮点误差（0.01）
+                        score_diff = abs(last_score_from_rq - expected_score)
+                        if score_diff > 0.01:
+                            error_msg = (
+                                f"[ERROR] GOP {gop_id} 的 last_score 不一致！\n"
+                                f"  RQ 中的 last_score: {last_score_from_rq:.2f}\n"
+                                f"  GOP {prev_gop_id} FB 的 score: {expected_score:.2f}\n"
+                                f"  差值: {score_diff:.2f}\n"
+                                f"  这表明编码器侧的 last_score 传递有误！"
+                            )
+                            self._log(1, error_msg)
+                            raise ValueError(error_msg)
                 
                 if self.agent is None:
                     self._ensure_models(seq.shape, scalars.shape[0])
@@ -251,16 +510,28 @@ class GOPRunner:
                         self.fb_read_failures.pop(fb_path)
                 except Exception as e:
                     self.fb_read_failures[fb_path] += 1
-                    if self.fb_read_failures[fb_path] < self.fb_max_retries:
+                    retry_count = self.fb_read_failures[fb_path]
+                    
+                    if retry_count < self.fb_max_retries:
+                        # 还有重试机会，等待后继续
+                        if retry_count % 10 == 1:  # 每 10 次重试记录一次日志
+                            self._log(2, f"[GOP][FB][WARN] FB 读取失败 (重试 {retry_count}/{self.fb_max_retries}): {fb_path}: {e}")
+                        time.sleep(self.fb_retry_wait_ms / 1000.0)
                         continue
                     else:
-                        self._log(1, f"[GOP][FB][ERROR] bad fb after retries: {fb_path}")
-                        try:
-                            os.remove(fb_path)
-                            self.fb_read_failures.pop(fb_path, None)
-                        except:
-                            pass
-                        continue
+                        # 达到最大重试次数，程序退出
+                        error_msg = (
+                            f"\n{'='*60}\n"
+                            f"[GOP][FB][FATAL] FB 文件读取失败，已重试 {self.fb_max_retries} 次\n"
+                            f"文件路径: {fb_path}\n"
+                            f"错误信息: {e}\n"
+                            f"程序将退出以避免数据不一致\n"
+                            f"{'='*60}\n"
+                        )
+                        self._log(1, error_msg)
+                        
+                        # 抛出异常，让程序退出
+                        raise RuntimeError(f"FB 文件读取失败: {fb_path}") from e
                 
                 gop_id = int(fb.get("gop_id", -1))
                 if gop_id not in self.pending:
@@ -299,6 +570,9 @@ class GOPRunner:
                     f"bitrate={bitrate:.1f}/{target_bitrate:.1f} score={score:.2f}/{target_score:.2f} reward={r:.4f}"
                 )
                 
+                # 记录此 FB 的 score 到 pending，用于下一个 RQ 的验证
+                pend["fb_score"] = score
+                
                 # 记录 reward 和 done
                 pend["reward"] = r
                 pend["done"] = is_last_gop
@@ -335,6 +609,27 @@ class GOPRunner:
                     self._log(1, f"  平均码率: {info['avg_bitrate']:.2f} ({info['bitrate_saved_pct']:+.1f}%)")
                     self._log(1, f"  平均质量: {info['avg_score']:.2f} ({info['score_diff_pct']:+.1f}%)")
                     self._log(1, f"{'='*60}\n")
+                else:
+                    # 非终止 GOP：标记为 last_gop_id，等待下一个 RQ 到来时存储转移
+                    self._last_gop_id = gop_id
+                    
+                    # === 新增：检查是否有后续 GOP 已经在 pending 中 ===
+                    # 如果 GOP 顺序是：RQ2 -> RQ3 -> FB2 -> FB3
+                    # 那么收到 FB2 时，GOP3 已经在 pending 中，可以立即存储转移
+                    next_gop_id = gop_id + 1
+                    if next_gop_id in self.pending:
+                        next_pend = self.pending[next_gop_id]
+                        if "seq" in next_pend and "scalars" in next_pend:
+                            # 下一个 GOP 的状态已经构建好，可以存储转移
+                            self.buf.push(
+                                pend["seq"], pend["scalars"], pend["a"],
+                                r,
+                                next_pend["seq"], next_pend["scalars"],
+                                done=False
+                            )
+                            self._log(3, f"[Replay] Push transition (late FB): gop_id={gop_id} -> {next_gop_id}")
+                            self.pending.pop(gop_id)
+                            self._last_gop_id = None
                 
                 # 训练
                 self.total_steps += 1

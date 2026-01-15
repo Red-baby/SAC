@@ -53,7 +53,7 @@ class Config:
     # Training
     batch_size: int = 128
     replay_size: int = 2000
-    start_steps: int = 10
+    start_steps: int = 5
     updates_per_step: int = 4
     seed: int = 42
     gamma: float = 0.99  # 折扣因子（D3QN 使用）
